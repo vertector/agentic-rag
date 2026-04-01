@@ -1,0 +1,148 @@
+# =============================================================================
+# docker-compose.yml — Production-Hardened Build
+# Merkle Qdrant + Redis
+# =============================================================================
+
+# =============================================================================
+# Quick start:
+#   cp .env.example .env          # fill in QDRANT_API_KEY, VL_MODEL_NAME, etc.
+#   docker compose up -d
+#   docker compose ps             # all services should show (healthy)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector store
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: qdrant_merkle
+
+    restart: unless-stopped
+
+    ports:
+      - "6333:6333" # REST API  (also used by the health check)
+      - "6334:6334" # gRPC API
+
+    environment:
+      - QDRANT_LOG_LEVEL=INFO
+
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+
+    # /readyz returns 200 only once all collections have finished loading,
+    # making it a true readiness probe — not just a liveness check.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >
+          python3 -c "import urllib.request, sys; r = urllib.request.urlopen('http://localhost:6333/readyz', timeout=5); sys.exit(0 if r.status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Give Qdrant time to load existing collections before the first check
+      start_period: 40s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+    networks:
+      - ingestion_network
+
+  # ---------------------------------------------------------------------------
+  # Redis — active-root state store (Merkle integrity index)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8.6.2-alpine
+    container_name: redis_merkle
+
+    # AOF persistence is already enabled in the original — good.
+    # Added: maxmemory policy so Redis degrades gracefully instead of
+    # crashing when it hits the memory limit.
+    command: >
+      redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy allkeys-lru --loglevel notice
+
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:6379:6379"
+        # bind to loopback only — Redis should not
+        # be reachable from outside the host
+
+    volumes:
+      - redis_storage:/data
+
+    # grep PONG validates the protocol response, not just exit code.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "redis-cli ping | grep -q PONG"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # Allow time for AOF replay on a large dataset before first check
+      start_period: 30s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - ingestion_network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  ingestion_network:
+    driver: bridge
+    # Restrict inter-container communication — only explicitly networked
+    # services can talk to each other.
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  qdrant_storage:
+    driver: local
+  qdrant_snapshots:
+    driver: local
+  redis_storage:
+    driver: local

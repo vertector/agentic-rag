@@ -1,0 +1,33 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+.env
+
+# Project specific
+.adk/
+article/
+certificate_of_origin/
+data/
+handwritten/
+sample/
+virology_pg2/
+*.json
+!**/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Lock files
+# uv.lock  # Keep if you want to track exact dependencies

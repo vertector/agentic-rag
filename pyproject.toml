@@ -1,0 +1,24 @@
+[project]
+name = "rag_engine"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=3.1.1",
+    "google-adk>=1.28.0",
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "langchain-core>=0.3.83",
+    "matplotlib>=3.10.8",
+    "mcp>=1.26.0",
+    "mlx-vlm>=0.4.2",
+    "numpy<2.4",
+    "paddleocr[all]>=3.4.0",
+    "paddlepaddle==3.3.0",
+    "pytest>=9.0.2",
+    "qdrant-client>=1.17.1",
+    "rank-bm25>=0.2.2",
+    "redis>=7.4.0",
+    "sentence-transformers>=5.2.2",
+]
