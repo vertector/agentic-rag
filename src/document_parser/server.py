@@ -21,7 +21,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP, Context
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import sys
 
 # Ensure the parent directory (rag_engine root) is in sys.path so that
-# absolute imports like 'shared' and 'document_parser' resolve properly when 
+# absolute imports like 'shared' and 'document_parser' resolve properly when
 # this script is executed directly via MCP.
 _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
@@ -40,6 +40,10 @@ if _project_root not in sys.path:
 
 from shared.schemas import PipelineSettings, Document
 from document_parser.document_parser import DocumentParser
+from shared.env_loader import load_env
+
+# Load environment variables (api keys, server URLs) if present
+load_env()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -70,7 +74,7 @@ _parser: DocumentParser = DocumentParser()
 class ParseDocumentInput(BaseModel):
     """Input model for parse_document."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore", populate_by_name=True)
 
     # --- file delivery (exactly one must be provided) ---
     file_path: Optional[str] = Field(
@@ -96,6 +100,30 @@ class ParseDocumentInput(BaseModel):
             "determine the file type."
         ),
     )
+    file_name: Optional[str] = Field(
+        default=None,
+        description="Legacy alias for file_path. Handled automatically.",
+    )
+    vl_rec_api_model_name: Optional[str] = Field(
+        default=None,
+        description="Vision-language model name (e.g. 'PaddlePaddle/PaddleOCR-VL-1.5').",
+    )
+    vl_rec_backend: Optional[str] = Field(
+        default=None,
+        description="Optional backend override for this specific parse call.",
+    )
+    vl_rec_server_url: Optional[str] = Field(
+        default=None,
+        description="Base URL of the VLM server (/v1 OpenAI-compatible endpoint).",
+    )
+    vl_rec_api_key: Optional[str] = Field(
+        default=None,
+        description="API key for the VLM server if authentication is required.",
+    )
+    use_doc_preprocessor: Optional[bool] = Field(
+        default=None,
+        description="Legacy flag, safely ignored or passed as extra arg.",
+    )
 
     # --- pipeline flags (all optional, override server defaults) ---
     use_ocr_for_image_block: Optional[bool] = Field(
@@ -108,7 +136,7 @@ class ParseDocumentInput(BaseModel):
         default=None, description="Dewarp skewed/curved documents (default: False)."
     )
     use_chart_recognition: Optional[bool] = Field(
-        default=None, description="Extract charts and graphs (default: True)."
+        default=None, description="Extract charts and graphs (default: False)."
     )
     use_layout_detection: Optional[bool] = Field(
         default=None, description="Detect document layout structure (default: True)."
@@ -122,55 +150,75 @@ class ParseDocumentInput(BaseModel):
     merge_layout_blocks: Optional[bool] = Field(
         default=None, description="Merge adjacent same-type layout blocks (default: True)."
     )
-    markdown_ignore_labels: Optional[List[str]] = Field(
-        default=None,
+    merge_tables: Optional[bool] = Field(
+        default=None, description="Merge table content across page boundaries (default: True)."
+    )
+    relevel_titles: Optional[bool] = Field(
+        default=None, description="Automatically adjust paragraph title levels (default: True)."
+    )
+    markdown_ignore_labels: List[str] = Field(
+        default_factory=list,
         description=(
             "Layout labels to omit from Markdown output, e.g. ['header', 'footer']. "
             "Default: [] (nothing ignored)."
         ),
     )
+    vlm_extra_args: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Generic bucket for backend-specific MLLM parameters."
+    )
     pipeline_version: Optional[str] = Field(
         default=None, description="PaddleOCR-VL pipeline version ('v1' or 'v1.5')."
     )
+
+    # --- layout tuning ---
     layout_threshold: Optional[float] = Field(
-        default=None, description="Score threshold for layout detection (e.g. 0.45)."
+        default=None, description="Score threshold for layout detection proposals (default: 0.3)."
     )
     layout_nms: Optional[bool] = Field(
-        default=None, description="Use NMS in layout detection."
+        default=None, description="Enable Non-Maximum Suppression for layout boxes (default: True)."
     )
     layout_unclip_ratio: Optional[float] = Field(
-        default=None, description="Expansion coefficient for layout boxes."
+        default=None, description="Expansion coefficient for detected layout boxes."
     )
     layout_merge_bboxes_mode: Optional[str] = Field(
-        default=None, description="Method for filtering overlapping boxes ('overlap')."
+        default=None, description="Strategy for merging overlapping bounding boxes ('union' or 'large')."
     )
     layout_shape_mode: Optional[str] = Field(
-        default=None, description="Mode for handling layout shapes ('auto')."
+        default=None, description="Geometric shape of layout boxes: 'auto', 'rectangle', etc."
     )
-    prompt_label: Optional[str] = Field(
-        default=None, description="Custom prompt label for the VLM inference."
-    )
-    repetition_penalty: Optional[float] = Field(
-        default=None, description="Repetition penalty for VLM sampling."
-    )
+
+    # --- VLM inference tuning ---
     temperature: Optional[float] = Field(
-        default=None, description="Temperature for VLM sampling."
+        default=None, description="Sampling temperature for VLM (default: 0.0 = deterministic)."
     )
     top_p: Optional[float] = Field(
-        default=None, description="Top-p sampling for VLM inference."
-    )
-    min_pixels: Optional[int] = Field(
-        default=None, description="Minimum pixels for VLM preprocessing."
-    )
-    max_pixels: Optional[int] = Field(
-        default=None, description="Maximum pixels for VLM preprocessing."
+        default=None, description="Top-p nucleus sampling threshold (default: 1.0)."
     )
     max_new_tokens: Optional[int] = Field(
-        default=None, description="Maximum tokens generated by the VLM per block."
+        default=None, description="Maximum tokens generated by the VLM per block (default: 4096)."
     )
-    use_queues: Optional[bool] = Field(
-        default=None, description="Use internal queues for processing."
+    repetition_penalty: Optional[float] = Field(
+        default=None, description="Repetition penalty for VLM sampling (default: 1.0)."
     )
+    prompt_label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Global VLM task prompt override. Leave None (default) to let PaddleOCRVL "
+            "route each block automatically. WARNING: setting this forces ALL blocks through "
+            "one prompt, breaking table structure recognition."
+        ),
+    )
+
+    # --- pixel limits ---
+    min_pixels: Optional[int] = Field(
+        default=None, description="Minimum total pixels for VLM input image (default: 147,384)."
+    )
+    max_pixels: Optional[int] = Field(
+        default=None, description="Maximum total pixels for VLM input image (default: 8,699,840)."
+    )
+
+    # --- response options ---
     include_page_images: bool = Field(
         default=False,
         description=(
@@ -179,11 +227,28 @@ class ParseDocumentInput(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _map_legacy_fields(cls, data: dict) -> dict:
+        file_name_val = data.get("file_name")
+        file_path_val = data.get("file_path")
+        
+        # Only assign file_name to file_path if file_path wasn't explicitly provided
+        # and base64 isn't being used (if base64 is used, file_name is just the filename)
+        if file_name_val and not file_path_val and not data.get("file_content_base64"):
+            file_path_val = file_name_val
+            
+        if file_path_val:
+            # Map resolving the absolute path via pathlib as requested
+            data["file_path"] = str(Path(file_path_val).resolve())
+            
+        return data
+
     @model_validator(mode="after")
     def _check_delivery_mode(self) -> "ParseDocumentInput":
-        has_path   = self.file_path is not None
-        has_b64    = self.file_content_base64 is not None
-        has_fname  = self.filename is not None
+        has_path  = self.file_path is not None
+        has_b64   = self.file_content_base64 is not None
+        has_fname = self.filename is not None
 
         if not has_path and not has_b64:
             raise ValueError("Provide either `file_path` or `file_content_base64` + `filename`.")
@@ -264,6 +329,7 @@ class ConfigureParserInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # --- backend ---
     vl_rec_api_model_name: Optional[str] = Field(
         default=None,
         description="Vision-language model name (e.g. 'PaddlePaddle/PaddleOCR-VL-1.5').",
@@ -272,7 +338,7 @@ class ConfigureParserInput(BaseModel):
         default=None,
         description=(
             "Inference backend: 'vllm-server', 'mlx-vlm-server', 'sglang-server', "
-            "'fastdeploy-server', or 'local'. Defaults to platform-appropriate backend."
+            "'fastdeploy-server', 'local', or 'native'. Defaults to platform-appropriate backend."
         ),
     )
     vl_rec_server_url: Optional[str] = Field(
@@ -283,6 +349,8 @@ class ConfigureParserInput(BaseModel):
         default=None,
         description="API key for the VLM server (if authentication is required).",
     )
+
+    # --- core flags ---
     use_ocr_for_image_block: Optional[bool] = Field(default=None, description="OCR on image blocks.")
     use_doc_orientation_classify: Optional[bool] = Field(default=None, description="Orientation correction.")
     use_doc_unwarping: Optional[bool] = Field(default=None, description="Dewarp documents.")
@@ -291,65 +359,90 @@ class ConfigureParserInput(BaseModel):
     use_seal_recognition: Optional[bool] = Field(default=None, description="Seal/stamp recognition.")
     format_block_content: Optional[bool] = Field(default=None, description="Format block content.")
     merge_layout_blocks: Optional[bool] = Field(default=None, description="Merge adjacent blocks.")
+    merge_tables: Optional[bool] = Field(default=None, description="Merge tables across page boundaries.")
+    relevel_titles: Optional[bool] = Field(default=None, description="Auto-adjust paragraph title levels.")
     markdown_ignore_labels: Optional[List[str]] = Field(
         default=None, description="Labels to exclude from Markdown output."
     )
     pipeline_version: Optional[str] = Field(
         default=None, description="Pipeline version ('v1' or 'v1.5')."
     )
-    layout_threshold: Optional[float] = Field(default=None)
-    layout_nms: Optional[bool] = Field(default=None)
-    layout_unclip_ratio: Optional[float] = Field(default=None)
-    layout_merge_bboxes_mode: Optional[str] = Field(default=None)
-    layout_shape_mode: Optional[str] = Field(default=None)
-    prompt_label: Optional[str] = Field(default=None)
-    repetition_penalty: Optional[float] = Field(default=None)
-    temperature: Optional[float] = Field(default=None)
-    top_p: Optional[float] = Field(default=None)
-    min_pixels: Optional[int] = Field(default=None)
-    max_pixels: Optional[int] = Field(default=None)
-    max_new_tokens: Optional[int] = Field(default=None)
-    use_queues: Optional[bool] = Field(default=None)
+    use_doc_preprocessor: Optional[bool] = Field(
+        default=None, description="Legacy flag for document preprocessor."
+    )
+
+    # --- layout tuning ---
+    layout_threshold: Optional[float] = Field(default=None, description="Layout detection score threshold.")
+    layout_nms: Optional[bool] = Field(default=None, description="Enable NMS for layout boxes.")
+    layout_unclip_ratio: Optional[float] = Field(default=None, description="Expansion ratio for layout boxes.")
+    layout_merge_bboxes_mode: Optional[str] = Field(default=None, description="Bounding box merge strategy.")
+    layout_shape_mode: Optional[str] = Field(default=None, description="Layout box shape mode.")
+
+    # --- VLM inference tuning ---
+    temperature: Optional[float] = Field(default=None, description="VLM sampling temperature.")
+    top_p: Optional[float] = Field(default=None, description="VLM top-p sampling threshold.")
+    max_new_tokens: Optional[int] = Field(default=None, description="Max tokens generated per block.")
+    repetition_penalty: Optional[float] = Field(default=None, description="VLM repetition penalty.")
+    prompt_label: Optional[str] = Field(default=None, description="Global VLM task prompt override.")
+
+    # --- pixel limits ---
+    min_pixels: Optional[int] = Field(default=None, description="Minimum pixels for VLM input image.")
+    max_pixels: Optional[int] = Field(default=None, description="Maximum pixels for VLM input image.")
+
+    # --- extra args ---
+    vlm_extra_args: Optional[Dict[str, Any]] = Field(
+        default=None, description="Generic bucket for backend-specific parameters not covered above."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+# All PipelineSettings fields that can be overridden on a per-call basis.
+_OVERRIDE_FIELDS = {
+    "use_ocr_for_image_block",
+    "use_doc_orientation_classify",
+    "use_doc_unwarping",
+    "use_chart_recognition",
+    "use_layout_detection",
+    "use_seal_recognition",
+    "format_block_content",
+    "merge_layout_blocks",
+    "merge_tables",
+    "relevel_titles",
+    "markdown_ignore_labels",
+    "pipeline_version",
+    "layout_threshold",
+    "layout_nms",
+    "layout_unclip_ratio",
+    "layout_merge_bboxes_mode",
+    "layout_shape_mode",
+    "temperature",
+    "top_p",
+    "max_new_tokens",
+    "repetition_penalty",
+    "prompt_label",
+    "min_pixels",
+    "max_pixels",
+    "vlm_extra_args",
+    "vl_rec_api_model_name",
+    "vl_rec_backend",
+    "vl_rec_server_url",
+    "vl_rec_api_key",
+    "use_doc_preprocessor",
+}
+
+
 def _build_settings_override(params: ParseDocumentInput) -> Optional[PipelineSettings]:
     """
     Build a per-call PipelineSettings only when the caller supplied overrides.
     Returns None if no overrides were given (parser uses its current settings).
     """
-    override_fields = {
-        "use_ocr_for_image_block",
-        "use_doc_orientation_classify",
-        "use_doc_unwarping",
-        "use_chart_recognition",
-        "use_layout_detection",
-        "use_seal_recognition",
-        "format_block_content",
-        "merge_layout_blocks",
-        "markdown_ignore_labels",
-        "pipeline_version",
-        "layout_threshold",
-        "layout_nms",
-        "layout_unclip_ratio",
-        "layout_merge_bboxes_mode",
-        "layout_shape_mode",
-        "prompt_label",
-        "repetition_penalty",
-        "temperature",
-        "top_p",
-        "min_pixels",
-        "max_pixels",
-        "max_new_tokens",
-        "use_queues",
-    }
     overrides = {
         f: getattr(params, f)
-        for f in override_fields
-        if getattr(params, f) is not None
+        for f in _OVERRIDE_FIELDS
+        if getattr(params, f, None) is not None
     }
     if not overrides:
         return None
@@ -410,33 +503,7 @@ def _write_base64_to_tempfile(b64_content: str, filename: str) -> str:
 )
 async def parse_document(
     ctx: Context,
-    file_path: Optional[str] = None,
-    file_content_base64: Optional[str] = None,
-    filename: Optional[str] = None,
-    use_ocr_for_image_block: Optional[bool] = None,
-    use_doc_orientation_classify: Optional[bool] = None,
-    use_doc_unwarping: Optional[bool] = None,
-    use_chart_recognition: Optional[bool] = None,
-    use_layout_detection: Optional[bool] = None,
-    use_seal_recognition: Optional[bool] = None,
-    format_block_content: Optional[bool] = None,
-    merge_layout_blocks: Optional[bool] = None,
-    markdown_ignore_labels: Optional[List[str]] = None,
-    pipeline_version: Optional[str] = None,
-    layout_threshold: Optional[float] = None,
-    layout_nms: Optional[bool] = None,
-    layout_unclip_ratio: Optional[float] = None,
-    layout_merge_bboxes_mode: Optional[str] = None,
-    layout_shape_mode: Optional[str] = None,
-    prompt_label: Optional[str] = None,
-    repetition_penalty: Optional[float] = None,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-    min_pixels: Optional[int] = None,
-    max_pixels: Optional[int] = None,
-    max_new_tokens: Optional[int] = None,
-    use_queues: Optional[bool] = None,
-    include_page_images: bool = False,
+    params: ParseDocumentInput,
 ) -> str:
     """
     Parse a single document (PDF or image) using PaddleOCRVL.
@@ -445,15 +512,7 @@ async def parse_document(
     Returns a JSON array of per-page Document objects with markdown, chunks, and metadata.
 
     Args:
-        file_path: Absolute or relative path to the document on the server filesystem.
-                   Supported: .pdf, .png, .jpg, .jpeg, .tiff, .bmp, .webp
-        file_content_base64: Base64-encoded file bytes. Only when file is NOT on disk.
-                             Must be paired with `filename`.
-        filename: Original filename with extension (e.g. 'report.pdf'). Required with base64.
-        include_page_images: Include base64 page images in response (default: False).
-        use_ocr_for_image_block: Apply OCR to image blocks.
-        use_chart_recognition: Extract charts and graphs.
-        use_layout_detection: Detect document layout structure.
+        params (ParseDocumentInput): Encapsulated JSON object containing all settings and delivery methods.
     """
     logger.info("Preparing file...")
 
@@ -461,26 +520,9 @@ async def parse_document(
     parse_path: str
 
     try:
-        # --- Validate delivery mode (was Pydantic model_validator) -------------
-        if file_path is None and file_content_base64 is None:
-            return json.dumps({
-                "error": "InvalidInput",
-                "message": "Provide either `file_path` or `file_content_base64` + `filename`.",
-            })
-        if file_path is not None and file_content_base64 is not None:
-            return json.dumps({
-                "error": "InvalidInput",
-                "message": "`file_path` and `file_content_base64` are mutually exclusive.",
-            })
-        if file_content_base64 is not None and not filename:
-            return json.dumps({
-                "error": "InvalidInput",
-                "message": "`filename` is required when `file_content_base64` is provided.",
-            })
-
-        # --- Resolve input file ------------------------------------------------
-        if file_path is not None:
-            parse_path = file_path
+        # --- Resolve input file -----------------------------------------------
+        if params.file_path is not None:
+            parse_path = params.file_path
             if not Path(parse_path).exists():
                 return json.dumps({
                     "error": "FileNotFoundError",
@@ -490,8 +532,8 @@ async def parse_document(
             logger.info("Decoding base64 content...")
             try:
                 tmp_path = _write_base64_to_tempfile(
-                    file_content_base64,  # type: ignore[arg-type]
-                    filename,             # type: ignore[arg-type]
+                    params.file_content_base64,  # type: ignore[arg-type]
+                    params.filename,             # type: ignore[arg-type]
                 )
             except (ValueError, Exception) as exc:
                 return json.dumps({
@@ -500,43 +542,13 @@ async def parse_document(
                 })
             parse_path = tmp_path
 
-        # --- Build per-call settings (if any overrides) ------------------------
-        # Reconstruct Pydantic model for _build_settings_override reuse
-        params = ParseDocumentInput(
-            file_path=file_path,
-            file_content_base64=file_content_base64,
-            filename=filename,
-            use_ocr_for_image_block=use_ocr_for_image_block,
-            use_doc_orientation_classify=use_doc_orientation_classify,
-            use_doc_unwarping=use_doc_unwarping,
-            use_chart_recognition=use_chart_recognition,
-            use_layout_detection=use_layout_detection,
-            use_seal_recognition=use_seal_recognition,
-            format_block_content=format_block_content,
-            merge_layout_blocks=merge_layout_blocks,
-            markdown_ignore_labels=markdown_ignore_labels,
-            pipeline_version=pipeline_version,
-            layout_threshold=layout_threshold,
-            layout_nms=layout_nms,
-            layout_unclip_ratio=layout_unclip_ratio,
-            layout_merge_bboxes_mode=layout_merge_bboxes_mode,
-            layout_shape_mode=layout_shape_mode,
-            prompt_label=prompt_label,
-            repetition_penalty=repetition_penalty,
-            temperature=temperature,
-            top_p=top_p,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-            max_new_tokens=max_new_tokens,
-            use_queues=use_queues,
-            include_page_images=include_page_images,
-        )
+        # --- Build per-call settings (if any overrides) ----------------------
         settings_override = _build_settings_override(params)
         active_parser = (
             DocumentParser(settings_override) if settings_override else _parser
         )
 
-        # --- Run parse in thread (blocking call, preserves event loop) ---------
+        # --- Run parse in thread (blocking call, preserves event loop) -------
         logger.info("Loading pipeline (first call may take ~30s)...")
 
         loop = asyncio.get_running_loop()
@@ -547,7 +559,7 @@ async def parse_document(
         )
 
         logger.info("Serialising results...")
-        serialised = _serialise_documents(documents, include_page_images)
+        serialised = _serialise_documents(documents, params.include_page_images)
 
         # Attach Merkle roots (content fingerprints) to each page
         for doc_obj, doc_dict in zip(documents, serialised):

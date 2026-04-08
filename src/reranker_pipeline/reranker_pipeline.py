@@ -238,6 +238,7 @@ class HybridReranker:
         rerank_top_n: int = 5,
         category: Optional[str] = None,
         version_root: Optional[str] = None,
+        collection_name: Optional[str] = None,
     ) -> List[RankedResult]:
         """
         Full hybrid reranking pipeline.
@@ -262,7 +263,7 @@ class HybridReranker:
 
         # Stage 1a: Vector retrieval (via ingestor — handles all Merkle filters)
         vector_candidates = await self._vector_leg(
-            query, retrieval_top_k, category, version_root
+            query, retrieval_top_k, category, version_root, collection_name
         )
 
         if not vector_candidates:
@@ -299,6 +300,7 @@ class HybridReranker:
         top_k: int,
         category: Optional[str],
         version_root: Optional[str],
+        collection_name: Optional[str],
     ) -> List[_Candidate]:
         """
         Delegates to ingestor.secure_search() which enforces:
@@ -312,6 +314,7 @@ class HybridReranker:
                 category=category,
                 version_root=version_root,
                 limit=top_k,
+                collection_name=collection_name,
             )
         except IngestorError as exc:
             logger.error("Vector leg failed: %s", exc)

@@ -41,6 +41,10 @@ if _project_root not in sys.path:
 
 from ingestion_pipeline.ingestion_pipeline import AsyncMerkleQdrantIngestor, IngestorError
 from shared.schemas import Document, Metadata, Chunk, Grounding, PipelineSettings  # noqa: F401
+from shared.env_loader import load_env
+
+# Load environment variables (api keys, connection URLs) if present
+load_env()
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +172,24 @@ def _error(kind: str, message: str, suggestion: str = "") -> str:
     return json.dumps(payload, indent=2)
 
 
+def _resolve_filename(v: str) -> str:
+    """
+    If the provided string is a path to a .json file (e.g. documents.json), 
+    attempt to extract its internal metadata.filename. Always returns the 
+    base filename (e.g. 'doc.pdf').
+    """
+    p = Path(v)
+    if p.exists() and p.suffix.lower() == ".json":
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    v = data[0].get("metadata", {}).get("filename", v)
+        except Exception:
+            pass
+    return Path(v).name
+
+
 # ---------------------------------------------------------------------------
 # Input models
 # ---------------------------------------------------------------------------
@@ -197,6 +219,19 @@ class IngestInput(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _map_legacy_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Map file_name -> file_path for compatibility
+            if "file_name" in data and "file_path" not in data:
+                data["file_path"] = data.pop("file_name")
+
+            # Resolve to absolute path if provided
+            if data.get("file_path"):
+                data["file_path"] = str(Path(data["file_path"]).resolve())
+        return data
+
     @model_validator(mode="after")
     def _check_delivery(self) -> "IngestInput":
         has_path = self.file_path is not None
@@ -218,13 +253,19 @@ class VerifyIntegrityInput(BaseModel):
         min_length=1,
         description=(
             "Original document filename as stored during ingestion "
-            "(e.g. 'report.pdf'). Must match exactly — including path if one was used."
+            "(e.g. 'report.pdf'). Automatically converted to basename."
         ),
     )
+
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _extract_basename(cls, v: str) -> str:
+        return _resolve_filename(v)
+
     page_index: int = Field(
         ...,
-        ge=0,
-        description="Zero-indexed page number to verify (e.g. 0 for the first page).",
+        ge=1,
+        description="1-indexed page number to verify (e.g. 1 for the first page).",
     )
 
 
@@ -273,8 +314,14 @@ class HistoryInput(BaseModel):
     filename: str = Field(
         ...,
         min_length=1,
-        description="Document filename to retrieve the version audit trail for.",
+        description="Document filename to retrieve the version audit trail for. Automatically converted to basename.",
     )
+
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _extract_basename(cls, v: str) -> str:
+        return _resolve_filename(v)
+
 
 
 class PurgeInput(BaseModel):
@@ -287,9 +334,15 @@ class PurgeInput(BaseModel):
         min_length=1,
         description=(
             "Document filename to permanently delete (all versions, all pages). "
-            "This operation is irreversible."
+            "Automatically converted to basename. This operation is irreversible."
         ),
     )
+
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _extract_basename(cls, v: str) -> str:
+        return _resolve_filename(v)
+
     confirm: bool = Field(
         ...,
         description=(
@@ -309,9 +362,16 @@ class ReconcileInput(BaseModel):
         min_length=1,
         description=(
             "Document filename to recover Redis state for. "
-            "Use after Redis data loss to re-seed active-root keys from Qdrant."
+            "Use after Redis data loss to re-seed active-root keys from Qdrant. "
+            "Automatically converted to basename."
         ),
     )
+
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _extract_basename(cls, v: str) -> str:
+        return _resolve_filename(v)
+
 
 
 class ConfigureInput(BaseModel):
@@ -428,9 +488,11 @@ async def ingest_data(params: IngestInput, ctx: Context) -> str:
             continue
 
         try:
-            # process_document is idempotent — returns None if unchanged
-            await ingestor.process_document(doc)
-            ingested += 1
+            # process_document is idempotent — returns True if actually written, False if skipped
+            if await ingestor.process_document(doc):
+                ingested += 1
+            else:
+                skipped += 1
         except IngestorError as exc:
             errors.append({
                 "page_index": doc.metadata.page_index,

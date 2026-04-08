@@ -51,6 +51,10 @@ if _project_root not in sys.path:
 # ← Adjust these lines if your package layout differs
 from ingestion_pipeline.ingestion_pipeline import AsyncMerkleQdrantIngestor, IngestorError
 from reranker_pipeline.reranker_pipeline import HybridReranker, RankedResult, format_citation
+from shared.env_loader import load_env
+
+# Load environment variables (api keys, connection URLs) if present
+load_env()
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +256,14 @@ class RerankSearchInput(BaseModel):
             "Obtain valid roots from ingest_history."
         ),
     )
+    collection_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Qdrant collection override to run the search against. "
+            "If omitted, it inherently uses the default pipeline collection "
+            "(e.g. 'secure_rag_baai-bge-small-en-v1.5')."
+        ),
+    )
     include_citations_text: bool = Field(
         default=False,
         description=(
@@ -414,6 +426,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
             rerank_top_n=params.rerank_top_n,
             category=params.category,
             version_root=params.version_root,
+            collection_name=params.collection_name,
         )
     except IngestorError as exc:
         return _error(

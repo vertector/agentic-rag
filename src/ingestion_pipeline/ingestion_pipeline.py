@@ -341,11 +341,76 @@ class AsyncMerkleQdrantIngestor:
                 old_root[:8], exc,
             )
 
+    async def _check_version_exists(self, filename: str, page_index: int, version_root: str) -> bool:
+        """
+        Efficiently check if a specific document state (Merkle root) already
+        exists in the Qdrant object store.
+        """
+        try:
+            # We only need one leaf point to confirm the snapshot exists
+            results, _ = await self.qdrant.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="version_root", match=models.MatchValue(value=version_root)
+                        ),
+                        models.FieldCondition(
+                            key="metadata.filename", match=models.MatchValue(value=filename)
+                        ),
+                        models.FieldCondition(
+                            key="metadata.page_index", match=models.MatchValue(value=page_index)
+                        ),
+                        models.FieldCondition(
+                            key="is_merkle_leaf", match=models.MatchValue(value=True)
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+            return len(results) > 0
+        except Exception as exc:
+            logger.debug("Existence check failed for version %s: %s", version_root[:8], exc)
+            return False
+
+    async def _activate_version(self, filename: str, page_index: int, version_root: str):
+        """
+        Re-activates all leaf points for a specific snapshot (Object Checkout).
+        """
+        logger.info(
+            "Checking out existing snapshot %s... for %s (p.%d)",
+            version_root[:8], filename, page_index,
+        )
+        try:
+            await self.qdrant.set_payload(
+                collection_name=self.collection_name,
+                payload={"is_active": True},
+                points=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="version_root", match=models.MatchValue(value=version_root)
+                        ),
+                        models.FieldCondition(
+                            key="metadata.filename", match=models.MatchValue(value=filename)
+                        ),
+                        models.FieldCondition(
+                            key="metadata.page_index", match=models.MatchValue(value=page_index)
+                        ),
+                    ]
+                ),
+                wait=True,
+            )
+        except Exception as exc:
+            logger.error("Failed to activate snapshot %s...: %s", version_root[:8], exc)
+            raise IngestorError(f"Version activation failed: {exc}") from exc
+
     # ------------------------------------------------------------------
     # process_document — main write path
     # ------------------------------------------------------------------
 
-    async def process_document(self, doc: Document):
+    async def process_document(self, doc: Document) -> bool:
         """
         Ingest a document with Merkle snapshot versioning.
 
@@ -355,13 +420,16 @@ class AsyncMerkleQdrantIngestor:
           3. Upsert new leaf points + structural root anchor to Qdrant in batches of 200.
           4. Soft-delete previous version's leaf points (non-fatal on failure).
           5. Atomically update Redis to point to the new root.
+
+        Returns:
+          bool: True if new data was ingested; False if skipped (idempotent no-op).
         """
         if not doc.chunks:
             logger.warning(
                 "Document %s p.%d has no chunks — skipped.",
                 doc.metadata.filename, doc.metadata.page_index,
             )
-            return
+            return False
 
         root_hash = doc.get_merkle_root()
         encoded_fn = _encode_filename(doc.metadata.filename)
@@ -380,8 +448,34 @@ class AsyncMerkleQdrantIngestor:
                 "Synced (no change): %s p.%d (root: %s...)",
                 doc.metadata.filename, doc.metadata.page_index, root_hash[:8],
             )
-            return
+            return False
 
+        # --- Restoration Path (Git-style checkout) ---
+        if await self._check_version_exists(
+            doc.metadata.filename, doc.metadata.page_index, root_hash
+        ):
+            logger.info(
+                "Restoring existing version (Object Checkout): %s p.%d",
+                doc.metadata.filename, doc.metadata.page_index,
+            )
+            # Activate the restored version
+            await self._activate_version(
+                doc.metadata.filename, doc.metadata.page_index, root_hash
+            )
+            # Deactivate the current version
+            if previous_root:
+                await self._deactivate_previous_version(
+                    doc.metadata.filename, doc.metadata.page_index, previous_root
+                )
+            # Update the HEAD pointer in Redis
+            try:
+                await self.redis.set(redis_key, root_hash)
+            except Exception as exc:
+                raise IngestorError(f"Redis checkout update failed: {exc}") from exc
+
+            return True
+
+        # --- Standard Ingestion Path ---
         logger.info(
             "New snapshot for %s p.%d — root: %s...",
             doc.metadata.filename, doc.metadata.page_index, root_hash[:8],
@@ -479,6 +573,7 @@ class AsyncMerkleQdrantIngestor:
             ) from exc
 
         logger.info("Snapshot %s... committed successfully.", root_hash[:8])
+        return True
 
     # ------------------------------------------------------------------
     # verify_integrity  (FIX-2: paginated scroll)
@@ -610,6 +705,7 @@ class AsyncMerkleQdrantIngestor:
         category: Optional[str] = None,
         version_root: Optional[str] = None,
         limit: int = 5,
+        collection_name: Optional[str] = None,
     ):
         """
         Semantic RAG search with point-in-time version pinning.
@@ -650,7 +746,7 @@ class AsyncMerkleQdrantIngestor:
 
         try:
             response = await self.qdrant.query_points(
-                collection_name=self.collection_name,
+                collection_name=collection_name or self.collection_name,
                 query=query_vector[0].tolist(),
                 query_filter=models.Filter(must=must_filters),
                 limit=limit,
