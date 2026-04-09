@@ -37,7 +37,7 @@ def before_agent_callback(callback_context: CallbackContext) -> Optional[types.C
     if "parser:session_parse_log" not in state:
         state["parser:session_parse_log"] = []
     warm_status = "warm" if state.get("parser:warm") else "cold (first call ~30s)"
-    logger.info("[PARSER START] session=%s pipeline=%s", callback_context.session_id, warm_status)
+    logger.info("[PARSER START] session=%s pipeline=%s", callback_context.session.id, warm_status)
     return None
 
 
@@ -48,7 +48,7 @@ def after_agent_callback(callback_context: CallbackContext) -> Optional[types.Co
         state["parser:session_parse_log"] = log[-_MAX_SESSION_LOG:]
     logger.info(
         "[PARSER END] session=%s total_parses=%d warm=%s",
-        callback_context.session_id,
+        callback_context.session.id,
         len(state.get("parser:session_parse_log", [])),
         state.get("parser:warm", False),
     )
@@ -82,21 +82,21 @@ def after_model_callback(
         return None
     text = " ".join(p.text for p in llm_response.content.parts if p.text)
     if '"escalate": true' in text or '"escalate":true' in text:
-        logger.warning("[PARSER ESCALATION] session=%s", callback_context.session_id)
+        logger.warning("[PARSER ESCALATION] session=%s", callback_context.session.id)
         callback_context.state["parser:escalation_pending"] = True
     return None
 
 
 def before_tool_callback(
     tool: BaseTool,
-    tool_args: dict,
+    args: dict,
     tool_context: ToolContext,
 ) -> Optional[dict]:
     tool_name = tool.name
     state = tool_context.state
 
     if tool_name == "configure_parser":
-        params = tool_args.get("params", {})
+        params = args.get("params", {})
         if isinstance(params, dict) and params.get("prompt_label") is not None:
             if not state.get(_PROMPT_LABEL_ACK_KEY):
                 return {
@@ -110,9 +110,9 @@ def before_tool_callback(
             del state[_PROMPT_LABEL_ACK_KEY]
 
     if tool_name == "parse_batch":
-        params = tool_args.get("params", {}) if isinstance(tool_args.get("params"), dict) else {}
-        max_workers = tool_args.get("max_workers") or params.get("max_workers")
-        file_paths = tool_args.get("file_paths") or params.get("file_paths") or []
+        params = args.get("params", {}) if isinstance(args.get("params"), dict) else {}
+        max_workers = args.get("max_workers") or params.get("max_workers")
+        file_paths = args.get("file_paths") or params.get("file_paths") or []
 
         if max_workers and int(max_workers) > _HIGH_WORKER_THRESHOLD:
             if not state.get(_HIGH_WORKER_ACK_KEY):
@@ -132,7 +132,7 @@ def before_tool_callback(
                 return {"error": "UnsupportedExtension", "message": f"Unsupported: {bad}"}
 
     if tool_name == "parse_document":
-        params = tool_args.get("params", {})
+        params = args.get("params", {})
         if isinstance(params, dict):
             path_to_check = params.get("file_path") or params.get("filename")
             if path_to_check and Path(path_to_check).suffix.lower() not in SUPPORTED_EXTENSIONS:
@@ -146,7 +146,7 @@ def before_tool_callback(
 
 def after_tool_callback(
     tool: BaseTool,
-    tool_args: dict,
+    args: dict,
     tool_context: ToolContext,
     tool_response: dict,
 ) -> Optional[dict]:
@@ -207,7 +207,7 @@ def after_tool_callback(
 
     elif tool_name == "parse_batch" and isinstance(parsed, list):
         state["parser:warm"] = True
-        file_paths = tool_args.get("file_paths") or []
+        file_paths = args.get("file_paths") or []
         log: list = state.get("parser:session_parse_log", [])
         for i, doc_list in enumerate(parsed):
             fp = file_paths[i] if i < len(file_paths) else f"file_{i}"
