@@ -565,8 +565,16 @@ async def parse_document(
         for doc_obj, doc_dict in zip(documents, serialised):
             doc_dict["merkle_root"] = doc_obj.get_merkle_root()
 
-        logger.info("Done.")
-        return json.dumps(serialised, indent=2, ensure_ascii=False)
+        # Calculate absolute output path to return to orchestrator
+        project_src = Path(__file__).resolve().parent.parent
+        output_folder = (project_src / Path(parse_path).stem).resolve()
+        output_path = str(output_folder / "documents.json")
+
+        logger.info(f"Done. Output saved to {output_path}")
+        return json.dumps({
+            "documents": serialised,
+            "output_path": output_path
+        }, indent=2, ensure_ascii=False)
 
     except FileNotFoundError as exc:
         logger.error(f"parse_document FileNotFoundError: {exc}")

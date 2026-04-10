@@ -89,6 +89,7 @@ ingestion_agent = LlmAgent(
     ),
     model="gemini-3.1-flash-lite-preview", #_model,
     instruction=build_instruction,
+    output_key="ingestor:agent_output",
     tools=[_ingestion_mcp, _skill_toolset],
     before_agent_callback=before_agent_callback,
     after_agent_callback=after_agent_callback,

@@ -131,6 +131,7 @@ document_parser_agent = LlmAgent(
     ),
     model='gemini-3.1-flash-lite-preview', #_model,
     instruction=build_instruction,  # dynamic callable
+    output_key="parser:agent_output",
     tools=[
         _parser_mcp,
         _skill_toolset,

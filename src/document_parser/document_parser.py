@@ -257,10 +257,13 @@ class DocumentParser:
                 documents: List[Document] = [fut.result() for fut in page_futures]
 
         # --- Stage 3: persist (single sequential write) ---
-        output_folder = Path(document_path.stem)
+        # Ensure output folder is an absolute path within 'src/'
+        project_src = Path(__file__).resolve().parent.parent
+        output_folder = (project_src / document_path.stem).resolve()
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        with open(output_folder / "documents.json", "w", encoding="utf-8") as f:
+        output_file = output_folder / "documents.json"
+        with open(output_file, "w", encoding="utf-8") as f:
             json.dump(
                 [doc.model_dump(mode="json") for doc in documents],
                 f,

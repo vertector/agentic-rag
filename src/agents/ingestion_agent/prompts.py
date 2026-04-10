@@ -38,10 +38,20 @@ def build_instruction(context: "InvocationContext") -> str:
       - Active version_root banner
       - Escalation lockout
       - Pending purge gate reminder
+      - Parsed document path from orchestrator
     """
     base = _load_static_prompt()
     state = context.session.state
     augments: list[str] = []
+
+    # Inject parsed path from orchestrator if available
+    if state.get("orchestrator:parser_output_path"):
+        path = state["orchestrator:parser_output_path"]
+        augments.append(
+            f"PARSED DOCUMENT AVAILABLE: The absolute path to the parsed results is '{path}'. "
+            "Use this as the `file_path` for `ingest_data` calls unless the orchestrator "
+            "explicitly specifies a different path."
+        )
 
     if not state.get("ingestor:connected"):
         augments.append(

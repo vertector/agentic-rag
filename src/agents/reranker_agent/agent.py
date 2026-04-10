@@ -143,7 +143,7 @@ reranker_agent = LlmAgent(
     # Dynamic instruction — personalised per turn from session state.
     # Loads system_prompt.xml as the base and appends runtime augments.
     instruction=build_instruction,
-
+    output_key="reranker:agent_output",
     tools=[
         _reranker_mcp,     # MCP tools: rerank_search, configure, status, cache_clear
         _skill_toolset,    # Skills: rerank-execution, citation-formatting
