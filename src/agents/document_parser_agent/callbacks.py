@@ -16,6 +16,8 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from shared.utils import resolve_placeholders
+
 logger = logging.getLogger("document_parser_agent.callbacks")
 
 _MAX_SESSION_LOG = 100
@@ -70,7 +72,12 @@ def before_model_callback(
     if llm_request.contents:
         last_msg = llm_request.contents[-1]
         if last_msg.role == "user" and last_msg.parts:
-            last_msg.parts.append(types.Part(text=f"[parser_state: {', '.join(ctx_parts)}]"))
+            # Also resolve placeholders in the message the parser model sees
+            for part in last_msg.parts:
+                if part.text:
+                    part.text = resolve_placeholders(part.text)
+            
+            last_msg.parts.append(types.Part(text=f"\n\n[parser_state: {', '.join(ctx_parts)}]"))
     return None
 
 
@@ -87,7 +94,7 @@ def after_model_callback(
     return None
 
 
-def before_tool_callback(
+async def before_tool_callback(
     tool: BaseTool,
     args: dict,
     tool_context: ToolContext,
@@ -127,7 +134,7 @@ def before_tool_callback(
             del state[_HIGH_WORKER_ACK_KEY]
 
         if file_paths:
-            bad = [p for p in file_paths if Path(p).suffix.lower() not in SUPPORTED_EXTENSIONS]
+            bad = [p for p in file_paths if Path(resolve_placeholders(p)).suffix.lower() not in SUPPORTED_EXTENSIONS]
             if bad:
                 return {"error": "UnsupportedExtension", "message": f"Unsupported: {bad}"}
 
@@ -135,16 +142,19 @@ def before_tool_callback(
         params = args.get("params", {})
         if isinstance(params, dict):
             path_to_check = params.get("file_path") or params.get("filename")
-            if path_to_check and Path(path_to_check).suffix.lower() not in SUPPORTED_EXTENSIONS:
-                return {
-                    "error": "UnsupportedExtension",
-                    "message": f"File type '{Path(path_to_check).suffix}' is not supported.",
-                    "supported": sorted(SUPPORTED_EXTENSIONS),
-                }
+            if path_to_check:
+                path_to_check = resolve_placeholders(path_to_check)
+                suffix = Path(path_to_check).suffix.lower()
+                if suffix not in SUPPORTED_EXTENSIONS:
+                    return {
+                        "error": "UnsupportedExtension",
+                        "message": f"File type {suffix!r} is not supported.",
+                        "supported": sorted(SUPPORTED_EXTENSIONS),
+                    }
     return None
 
 
-def after_tool_callback(
+async def after_tool_callback(
     tool: BaseTool,
     args: dict,
     tool_context: ToolContext,
@@ -184,46 +194,82 @@ def after_tool_callback(
         logger.warning("[TOOL ERROR] %s → %s: %s", tool_name, parsed.get("error"), parsed.get("message", "")[:120])
         return None
 
-    if tool_name == "parse_document" and isinstance(parsed, list):
-        page_count = len(parsed)
-        filename = parsed[0].get("metadata", {}).get("filename", "") if parsed else ""
+    if tool_name == "parse_document":
+        docs_list = parsed.get("documents") if isinstance(parsed, dict) else parsed
+        output_path = parsed.get("output_path") if isinstance(parsed, dict) else None
+        
+        if not isinstance(docs_list, list):
+            logger.warning("[TOOL ERROR] parse_document returned unexpected type: %s", type(docs_list))
+            return None
+
+        page_count = len(docs_list)
+        filename = docs_list[0].get("metadata", {}).get("filename", "") if docs_list else ""
         stem = Path(filename).stem if filename else "unknown"
+        
         state["parser:warm"] = True
         state["parser:last_parsed_file"] = filename
-        state["parser:last_results"] = json.dumps(parsed)
+        state["parser:last_results"] = json.dumps(docs_list)
+        
+        if output_path:
+            state["orchestrator:parser_output_path"] = output_path
+            logger.info("[PARSER] Shared absolute output_path: %s", output_path)
+
         log: list = state.get("parser:session_parse_log", [])
-        log.append({"file": filename, "page_count": page_count, "merkle_roots": [p.get("merkle_root", "") for p in parsed]})
+        log.append({
+            "file": filename, 
+            "page_count": page_count, 
+            "merkle_roots": [p.get("merkle_root", "") for p in docs_list]
+        })
         state["parser:session_parse_log"] = log
+        
         try:
             artifact_name = f"parsed_{stem}_{tool_context.invocation_id}.json"
-            tool_context.save_artifact(
+            await tool_context.save_artifact(
                 filename=artifact_name,
-                artifact=types.Part(inline_data=types.Blob(mime_type="application/json", data=json.dumps(parsed, indent=2).encode())),
+                artifact=types.Part(inline_data=types.Blob(
+                    mime_type="application/json", 
+                    data=json.dumps(parsed, indent=2).encode()
+                )),
             )
             logger.info("[ARTIFACT SAVED] %s — %d pages", artifact_name, page_count)
         except Exception as exc:
             logger.warning("[ARTIFACT SAVE FAILED] %s", exc)
         logger.info("[TOOL POST] parse_document file=%r pages=%d", filename, page_count)
 
-    elif tool_name == "parse_batch" and isinstance(parsed, list):
+    elif tool_name == "parse_batch":
+        batch_results = parsed if isinstance(parsed, list) else []
         state["parser:warm"] = True
         file_paths = args.get("file_paths") or []
         log: list = state.get("parser:session_parse_log", [])
-        for i, doc_list in enumerate(parsed):
+        
+        for i, res in enumerate(batch_results):
             fp = file_paths[i] if i < len(file_paths) else f"file_{i}"
-            if isinstance(doc_list, list):
-                log.append({"file": fp, "page_count": len(doc_list), "merkle_roots": [p.get("merkle_root", "") for p in doc_list]})
+            docs_list = res.get("documents") if isinstance(res, dict) else res
+            
+            if isinstance(docs_list, list):
+                log.append({
+                    "file": fp, 
+                    "page_count": len(docs_list), 
+                    "merkle_roots": [p.get("merkle_root", "") for p in docs_list]
+                })
+                if i == 0 and isinstance(res, dict) and "output_path" in res:
+                    state["orchestrator:parser_output_path"] = res["output_path"]
+                    state["parser:last_parsed_file"] = docs_list[0].get("metadata", {}).get("filename", "")
+        
         state["parser:session_parse_log"] = log
         try:
             artifact_name = f"batch_{tool_context.invocation_id}.json"
-            tool_context.save_artifact(
+            await tool_context.save_artifact(
                 filename=artifact_name,
-                artifact=types.Part(inline_data=types.Blob(mime_type="application/json", data=json.dumps(parsed, indent=2).encode())),
+                artifact=types.Part(inline_data=types.Blob(
+                    mime_type="application/json", 
+                    data=json.dumps(parsed, indent=2).encode()
+                )),
             )
-            logger.info("[ARTIFACT SAVED] %s — %d documents", artifact_name, len(parsed))
+            logger.info("[ARTIFACT SAVED] %s — %d documents", artifact_name, len(batch_results))
         except Exception as exc:
             logger.warning("[ARTIFACT SAVE FAILED] %s", exc)
-        logger.info("[TOOL POST] parse_batch documents=%d", len(parsed))
+        logger.info("[TOOL POST] parse_batch documents=%d", len(batch_results))
 
     elif tool_name == "configure_parser" and isinstance(parsed, dict):
         state["parser:warm"] = False

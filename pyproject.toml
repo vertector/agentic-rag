@@ -17,6 +17,7 @@ dependencies = [
     "numpy<2.4",
     "paddleocr[all]>=3.4.0",
     "paddlepaddle>=3.3.1",
+    "pymupdf>=1.25.3",
     "pytest>=9.0.2",
     "qdrant-client>=1.17.1",
     "rank-bm25>=0.2.2",

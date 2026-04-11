@@ -552,7 +552,8 @@ async def parse_document(
         logger.info("Loading pipeline (first call may take ~30s)...")
 
         loop = asyncio.get_running_loop()
-        documents: List[Document] = await loop.run_in_executor(
+        # parse returns Tuple[List[Document], Path]
+        documents, output_file = await loop.run_in_executor(
             None,
             active_parser.parse,
             parse_path,
@@ -565,10 +566,7 @@ async def parse_document(
         for doc_obj, doc_dict in zip(documents, serialised):
             doc_dict["merkle_root"] = doc_obj.get_merkle_root()
 
-        # Calculate absolute output path to return to orchestrator
-        project_src = Path(__file__).resolve().parent.parent
-        output_folder = (project_src / Path(parse_path).stem).resolve()
-        output_path = str(output_folder / "documents.json")
+        output_path = str(output_file.resolve())
 
         logger.info(f"Done. Output saved to {output_path}")
         return json.dumps({

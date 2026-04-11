@@ -1,53 +1,42 @@
 """
-Document parser using PaddleOCRVL.
+Document parser using PaddleOCRVL with Redis-backed 3-tier optimization.
 
-Concurrency model
------------------
-1. ThreadPoolExecutor — parallel page saves inside parse()
-   Rationale: save_to_json / save_to_markdown are I/O-bound and independent
-   per page. I/O releases the GIL, so threads actually run concurrently.
-
-2. ThreadPoolExecutor — parallel per-page processing inside parse()
-   Rationale: json.load uses a C extension (GIL released), PIL image ops
-   release the GIL. Pydantic construction is fast; thread overhead is
-   dominated by the I/O + C-ext work that precedes it.
-
-3. ProcessPoolExecutor — parse_batch() for document-level parallelism.
-   Rationale: each worker process owns one PaddleOCRVL instance, so the
-   model is loaded once per process, not once per document. The pipeline
-   is never pickled — only a plain settings dict crosses the boundary.
-
-NOT async: PaddleOCR has no async API. Wrapping predict() in
-asyncio.run_in_executor is just threading with extra boilerplate.
-
-Thread safety
--------------
-- _get_pipeline uses double-checked locking (threading.Lock).
-- _process_page reads only immutable per-call inputs — no shared state.
-- _save_page writes to uniquely named files in a per-call temp dir — no races.
+Optimizations:
+1. CAS Symlinking: Results stored in .cache/parsed/<hash>/, symlinked from src/
+2. LRU Pruning: Redis-backed tracking and automated cleanup of old versions.
+3. Incremental Parsing: Page-level hashing/caching via fitz (PyMuPDF).
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
+import redis
+import fitz  # PyMuPDF
 from PIL import Image
 
 from shared.schemas import Chunk, Document, Grounding, Metadata, PipelineSettings
+from shared.env_loader import load_env
+from shared.utils import validate_path, sanitize_stem, resolve_placeholders
+
+# Hydrate environment from .env
+load_env()
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers for ProcessPoolExecutor workers.
-# Must be at module level to be picklable.
 # ---------------------------------------------------------------------------
 
 _worker_parser: Optional["DocumentParser"] = None
@@ -59,15 +48,17 @@ def _init_worker(settings_dict: dict) -> None:
     _worker_parser = DocumentParser(PipelineSettings(**settings_dict))
 
 
-def _worker_parse(input_path: str) -> List[dict]:
+def _worker_parse(input_path: str) -> dict:
     """
     Parse a single document inside a worker process.
-
-    Returns JSON-safe dicts so no Document objects cross the process boundary
-    (Pydantic models with UUID fields are not reliably picklable in all envs).
+    Returns a dict with 'documents' (JSON-safe) and 'output_path'.
     """
     assert _worker_parser is not None, "Worker not initialised — _init_worker not called"
-    return [doc.model_dump(mode="json") for doc in _worker_parser.parse(input_path)]
+    docs, path = _worker_parser.parse(input_path)
+    return {
+        "documents": [doc.model_dump(mode="json") for doc in docs],
+        "output_path": str(path)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -77,93 +68,138 @@ def _worker_parse(input_path: str) -> List[dict]:
 
 class DocumentParser:
     """
-    Production-ready document parser using PaddleOCRVL.
-
-    Usage:
-        >>> parser = DocumentParser()
-        >>> pages = parser.parse("report.pdf")
-        # Output written to ./report/documents.json
-
-        >>> # Batch — launches N worker processes, each loads the model once.
-        >>> all_pages = parser.parse_batch(["a.pdf", "b.pdf", "c.pdf"])
-
-        >>> # Custom settings
-        >>> settings = PipelineSettings(use_chart_recognition=False)
-        >>> parser = DocumentParser(settings=settings)
+    Production-ready document parser using PaddleOCRVL with 3-tier optimization.
     """
 
-    __slots__ = ("_settings", "_pipeline", "_pipeline_lock")
+    __slots__ = ("_settings", "_pipeline", "_pipeline_lock", "_redis", "_cache_root", "_lru_key")
 
     def __init__(self, settings: Optional[PipelineSettings] = None) -> None:
         self._settings = settings or PipelineSettings()
         self._pipeline = None
-        # Lock guards lazy pipeline initialisation against concurrent callers.
         self._pipeline_lock = threading.Lock()
+
+        # Cache and LRU tracking setup
+        project_src = Path(__file__).resolve().parent.parent
+        self._cache_root = (project_src / ".cache").resolve()
+        (self._cache_root / "parsed").mkdir(parents=True, exist_ok=True)
+        (self._cache_root / "pages").mkdir(parents=True, exist_ok=True)
+        self._lru_key = "parser:lru"
+
+        # Initialise Redis connection for caching
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        try:
+            self._redis = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                decode_responses=True,
+                socket_timeout=2.0,
+            )
+            self._redis.ping()
+            logger.info("Connected to Redis at %s:%d for parsing cache.", redis_host, redis_port)
+        except Exception as exc:
+            logger.warning("Redis parsing cache unavailable: %s", exc)
+            self._redis = None
 
     @property
     def settings(self) -> PipelineSettings:
         return self._settings
 
     def _get_pipeline(self):
-        """
-        Thread-safe singleton — ensures we only load the heavy VLM once.
-
-        The outer `if` is a fast-path that skips lock acquisition once the
-        pipeline is ready. The inner `if` prevents a double-init when two
-        threads both pass the outer check before either acquires the lock.
-        """
+        """Thread-safe singleton for VLM pipeline."""
         if self._pipeline is None:
             with self._pipeline_lock:
                 if self._pipeline is None:
                     from paddleocr import PaddleOCRVL
-
-                    self._pipeline = PaddleOCRVL(
-                        **self._settings.to_init_kwargs(),
-                    )
+                    self._pipeline = PaddleOCRVL(**self._settings.to_init_kwargs())
         return self._pipeline
 
     @staticmethod
+    def _get_file_hash(file_path: Path) -> str:
+        """Calculate SHA-256 hash of a file."""
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            while chunk := f.read(65536):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _get_page_hashes(self, file_path: Path) -> List[str]:
+        """Generate stable hashes for each page using rendering for visual stability."""
+        hashes = []
+        ext = file_path.suffix.lower()
+        if ext == ".pdf":
+            doc = fitz.open(str(file_path))
+            for page in doc:
+                # Rendering to low-res pixmap is more "visual" and stable than raw stream
+                pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
+                hashes.append(hashlib.sha256(pix.samples).hexdigest())
+            doc.close()
+        else:
+            # Single page image
+            with open(file_path, "rb") as f:
+                hashes.append(hashlib.sha256(f.read()).hexdigest())
+        return hashes
+
+    def _update_lru(self, file_hash: str):
+        """Update last accessed timestamp for a hash in Redis."""
+        if self._redis:
+            try:
+                self._redis.zadd(self._lru_key, {file_hash: time.time()})
+            except Exception as exc:
+                logger.debug("LRU update failed: %s", exc)
+
+    def prune_cache(self, max_size_gb: float = 10.0):
+        """Delete least recently used cache entries until total size is within limit."""
+        if not self._redis:
+            logger.warning("Redis unavailable — pruning skipped.")
+            return
+
+        try:
+            current_size = sum(f.stat().st_size for f in self._cache_root.rglob('*') if f.is_file())
+            max_size = max_size_gb * 1024**3
+
+            if current_size <= max_size:
+                return
+
+            logger.info("Cache pruning: %.2f GB > %.2f GB limit.", current_size/1024**3, max_size_gb)
+
+            while current_size > max_size:
+                oldest = self._redis.zpopmin(self._lru_key)
+                if not oldest: break
+                
+                oldest_hash = oldest[0][0]
+                target = self._cache_root / "parsed" / oldest_hash
+                if target.exists():
+                    dir_size = sum(f.stat().st_size for f in target.rglob('*') if f.is_file())
+                    shutil.rmtree(target)
+                    current_size -= dir_size
+                    logger.info("Pruned old cache entry: %s", oldest_hash)
+
+            logger.info("Pruning complete. New size: %.2f GB", current_size/1024**3)
+        except Exception as exc:
+            logger.error("Pruning failed: %s", exc)
+
+    @staticmethod
     def _image_to_base64(img) -> str:
-        """Convert a PIL Image or numpy array to a base64-encoded PNG string."""
-        if not hasattr(img, "save"):
-            img = Image.fromarray(img)
+        """Convert PIL Image/numpy array to base64."""
+        if not hasattr(img, "save"): img = Image.fromarray(img)
         with BytesIO() as buf:
             img.save(buf, format="PNG")
             return base64.b64encode(buf.getvalue()).decode("utf-8")
 
     @staticmethod
     def _save_page(res, temp_dir: str) -> None:
-        """
-        Write one page's JSON and markdown to temp_dir (called in a thread).
-
-        PaddleOCR names output files after the input stem + page index,
-        so concurrent writes to the same temp_dir do not collide.
-        """
+        """Write page results to temp dir."""
         res.save_to_json(save_path=temp_dir)
         res.save_to_markdown(save_path=temp_dir)
 
-    def _process_page(
-        self,
-        page_output: dict,
-        json_path: Path,
-        md_path: Path,
-    ) -> Document:
-        """
-        Build a Document from one page's saved files (called in a thread).
-
-        Thread-safe: reads only immutable per-call arguments. json.load and
-        PIL image ops both release the GIL, giving real concurrency gains.
-        """
-        with open(json_path, "r", encoding="utf-8") as f:
-            json_data = json.load(f)
-        with open(md_path, "r", encoding="utf-8") as f:
-            md_data = f.read()
+    def _process_page(self, page_output: dict, json_path: Path, md_path: Path) -> Document:
+        """Build Document from saved page files."""
+        with open(json_path, "r", encoding="utf-8") as f: json_data = json.load(f)
+        with open(md_path, "r", encoding="utf-8") as f: md_data = f.read()
 
         page_index = (json_data.get("page_index") or 0) + 1
-        chunks_data = json_data.get("parsing_res_list", [])
-        layout_boxes = json_data.get("layout_det_res", {}).get("boxes", [])
-
-        chunks: List[Chunk] = [
+        chunks = [
             Chunk(
                 chunk_markdown=data.get("block_content", ""),
                 grounding=Grounding(
@@ -173,156 +209,163 @@ class DocumentParser:
                     page_index=page_index,
                 ),
             )
-            for data, item in zip(chunks_data, layout_boxes)
+            for data, item in zip(json_data.get("parsing_res_list", []), json_data.get("layout_det_res", {}).get("boxes", []))
         ]
 
         output_img = page_output.get("doc_preprocessor_res", {}).get("output_img")
-
         metadata = Metadata(
             filename=json_data.get("input_path", ""),
-            page_image_base64=(
-                self._image_to_base64(output_img) if output_img is not None else ""
-            ),
+            page_image_base64=self._image_to_base64(output_img) if output_img is not None else "",
             page_index=page_index,
             page_count=json_data.get("page_count") or 1,
         )
-
         return Document(markdown=md_data, chunks=chunks, metadata=metadata)
 
-    def parse(self, input_path: str, **kwargs) -> List[Document]:
-        """
-        Extract structured markdown and chunks from a document.
+    def parse(self, input_path: str, **kwargs) -> Tuple[List[Document], Path]:
+        """Extract structured markdown/chunks with 3-tier optimization."""
+        # Resolve placeholders and validate path
+        resolved_path = resolve_placeholders(input_path)
+        document_path = validate_path(resolved_path)
+        if not document_path.exists(): raise FileNotFoundError(f"No file at {document_path}")
 
-        Args:
-            input_path: Path to the document (PDF, image, …).
-            **kwargs: Overrides for inference (e.g. temperature, max_new_tokens).
+        file_hash = self._get_file_hash(document_path)
+        self._update_lru(file_hash)
 
-        Returns:
-            List of Document objects, one per page, in page order.
-
-        Raises:
-            FileNotFoundError: If the input file does not exist.
-        """
-        document_path = Path(input_path)
-        if not document_path.exists():
-            raise FileNotFoundError(f"No file found at {document_path}")
-
-        pipeline = self._get_pipeline()
-
-        # Merge inference settings with any per-call overrides
-        predict_args = {**self._settings.to_predict_kwargs(), **kwargs}
-
-        # Run extraction
-        raw_output = pipeline.predict(
-            input=str(document_path),
-            # **predict_args,
-        )
-
-        if document_path.suffix.lower() == ".pdf":
-            output: List[dict] = pipeline.restructure_pages(
-                list(raw_output),
-                merge_tables=self._settings.merge_tables,
-                relevel_titles=self._settings.relevel_titles,
-            )
-        else:
-            output = list(raw_output)
-
-        # Cap workers at page count — no benefit in more threads than pages.
-        n_workers = min(len(output), os.cpu_count() or 4)
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-
-            # --- Stage 1: save all pages in parallel (I/O-bound) ---
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                save_futures = [
-                    executor.submit(self._save_page, res, temp_dir) for res in output
-                ]
-                # Iterate with as_completed to propagate exceptions immediately
-                # (fail-fast) rather than waiting for all pages to finish.
-                for fut in as_completed(save_futures):
-                    fut.result()
-
-            stem = document_path.stem
-            json_files = sorted(Path(temp_dir).glob(f"**/{stem}*.json"))
-            md_files = sorted(Path(temp_dir).glob(f"**/{stem}*.md"))
-
-            # --- Stage 2: process all pages in parallel ---
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                # Submit in page order and collect in the same order — do NOT
-                # use as_completed here, which would scramble the page sequence.
-                page_futures = [
-                    executor.submit(self._process_page, page_out, j, m)
-                    for page_out, j, m in zip(output, json_files, md_files)
-                ]
-                documents: List[Document] = [fut.result() for fut in page_futures]
-
-        # --- Stage 3: persist (single sequential write) ---
-        # Ensure output folder is an absolute path within 'src/'
+        cache_folder = (self._cache_root / "parsed" / file_hash).resolve()
+        output_file = cache_folder / "documents.json"
+        
+        safe_stem = sanitize_stem(document_path.stem)
         project_src = Path(__file__).resolve().parent.parent
-        output_folder = (project_src / document_path.stem).resolve()
-        output_folder.mkdir(parents=True, exist_ok=True)
+        # DO NOT .resolve() symlink_path here, as it would follow existing links
+        symlink_path = project_src / safe_stem
 
-        output_file = output_folder / "documents.json"
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(
-                [doc.model_dump(mode="json") for doc in documents],
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
+        # --- Phase 1: Full Cache Check ---
+        if output_file.exists():
+            logger.info("Cache hit (Full): %s", file_hash[:8])
+            self._ensure_symlink(symlink_path, cache_folder)
+            with open(output_file, "r", encoding="utf-8") as f:
+                return [Document.model_validate(d) for d in json.load(f)], output_file
 
-        # --- Stage 3b: write standalone markdown files ---
-        # JSON escapes newlines (\n → literal \\n), which makes the "markdown"
-        # field inside documents.json unreadable when copy-pasted into a
-        # viewer. These standalone .md files preserve real newlines and render
-        # correctly in any markdown viewer.
-        for doc in documents:
-            md_filename = f"{document_path.stem}_{doc.metadata.page_index}.md"
-            with open(output_folder / md_filename, "w", encoding="utf-8") as f:
-                f.write(doc.markdown)
+        # --- Phase 3: Incremental Check ---
+        page_hashes = self._get_page_hashes(document_path)
+        pages: List[Optional[Document]] = [None] * len(page_hashes)
+        missing_indices = []
 
-        return documents
+        for i, ph in enumerate(page_hashes):
+            p_path = (self._cache_root / "pages" / ph / "page.json").resolve()
+            if p_path.exists():
+                with open(p_path, "r", encoding="utf-8") as f:
+                    doc = Document.model_validate(json.load(f))
+                    # Normalize metadata for current document context
+                    doc.metadata.filename = document_path.name
+                    doc.metadata.page_index = i + 1
+                    doc.metadata.page_count = len(page_hashes)
+                    pages[i] = doc
+            else:
+                missing_indices.append(i)
 
-    def parse_batch(
-        self,
-        input_paths: List[str],
-        max_workers: Optional[int] = None,
-    ) -> List[List[Document]]:
-        """
-        Parse multiple documents in parallel using separate worker processes.
+        if not missing_indices:
+            logger.info("Incremental hit: All pages cached.")
+            documents = [p for p in pages if p is not None]
+            self._persist_to_cache(cache_folder, documents, document_path, symlink_path)
+            return documents, output_file
 
-        Each worker process calls _init_worker() once on startup, creating its
-        own PaddleOCRVL pipeline. The pipeline is never pickled — only a plain
-        settings dict and file path strings cross the process boundary.
+        # --- Partial Miss: Process Subset ---
+        pipeline = self._get_pipeline()
+        logger.info("Incremental parse: %d/%d pages missing.", len(missing_indices), len(page_hashes))
 
-        Use this when processing N independent documents. For a single document
-        with many pages, parse() already parallelises at the page level.
+        with tempfile.NamedTemporaryFile(suffix=document_path.suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            if document_path.suffix.lower() == ".pdf":
+                src = fitz.open(str(document_path))
+                dst = fitz.open()
+                dst.insert_pdf(src)
+                dst.select(missing_indices)
+                dst.save(str(tmp_path))
+                src.close()
+                dst.close()
+            else:
+                shutil.copy(document_path, tmp_path)
 
-        Args:
-            input_paths: Paths to the documents to parse.
-            max_workers: Worker process count. Defaults to
-                         min(len(input_paths), os.cpu_count()).
+        try:
+            raw_output = list(pipeline.predict(input=str(tmp_path)))
+            n_workers = min(len(raw_output), os.cpu_count() or 4)
+            with tempfile.TemporaryDirectory() as td:
+                with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                    for res in raw_output: ex.submit(self._save_page, res, td)
+                
+                stem = tmp_path.stem
+                jsons = sorted(Path(td).glob(f"**/{stem}*.json"))
+                mds = sorted(Path(td).glob(f"**/{stem}*.md"))
+                
+                with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                    new_docs = [fut.result() for fut in [ex.submit(self._process_page, po, j, m) for po, j, m in zip(raw_output, jsons, mds)]]
 
-        Returns:
-            List of per-document Document lists, in the same order as input_paths.
-        """
-        if not input_paths:
-            return []
+            # Cache new pages and reassemble
+            for idx, doc in zip(missing_indices, new_docs):
+                ph = page_hashes[idx]
+                p_dir = (self._cache_root / "pages" / ph).resolve()
+                p_dir.mkdir(parents=True, exist_ok=True)
+                
+                doc.metadata.filename = document_path.name
+                doc.metadata.page_index = idx + 1
+                doc.metadata.page_count = len(page_hashes)
+                
+                with open(p_dir / "page.json", "w", encoding="utf-8") as f:
+                    json.dump(doc.model_dump(mode="json"), f, indent=2, ensure_ascii=False)
+                pages[idx] = doc
 
+        finally:
+            if tmp_path.exists(): os.unlink(tmp_path)
+
+        documents = [p for p in pages if p is not None]
+        self._persist_to_cache(cache_folder, documents, document_path, symlink_path)
+        return documents, output_file
+
+    def _ensure_symlink(self, link: Path, target: Path):
+        """Safely ensure link points to target, handling existing files/dirs/links."""
+        target_abs = target.resolve()
+        
+        if link.is_symlink():
+            try:
+                if link.resolve() == target_abs:
+                    return
+            except OSError:
+                pass # Broken link
+            link.unlink()
+        elif link.exists():
+            if link.is_dir():
+                shutil.rmtree(link)
+            else:
+                link.unlink()
+        
+        # Ensure parent exists
+        link.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure target is a concrete directory
+        target.mkdir(parents=True, exist_ok=True)
+        
+        link.symlink_to(target, target_is_directory=True)
+
+    def _persist_to_cache(self, folder: Path, docs: List[Document], doc_path: Path, link: Path):
+        """Persist full document results and update symlink."""
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / "documents.json", "w", encoding="utf-8") as f:
+            json.dump([d.model_dump(mode="json") for d in docs], f, indent=2, ensure_ascii=False)
+        for d in docs:
+            md_name = f"{doc_path.stem}_{d.metadata.page_index}.md"
+            with open(folder / md_name, "w", encoding="utf-8") as f:
+                f.write(d.markdown)
+        self._ensure_symlink(link, folder)
+
+    def parse_batch(self, input_paths: List[str], max_workers: Optional[int] = None) -> List[dict]:
+        """Parallel batch parsing with cached returns."""
+        if not input_paths: return []
         n_workers = max_workers or min(len(input_paths), os.cpu_count() or 1)
-        settings_dict = self._settings.model_dump()
-
-        with ProcessPoolExecutor(
-            max_workers=n_workers,
-            initializer=_init_worker,
-            initargs=(settings_dict,),
-        ) as pool:
-            # map() preserves submission order — results align with input_paths.
-            serialized: List[List[dict]] = list(pool.map(_worker_parse, input_paths))
-
-        # Reconstruct Document objects. model_validate handles UUID coercion
-        # from the string representation produced by model_dump(mode="json").
-        return [
-            [Document.model_validate(d) for d in docs]
-            for docs in serialized
-        ]
+        settings = self._settings.model_dump()
+        with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker, initargs=(settings,)) as pool:
+            results: List[dict] = list(pool.map(_worker_parse, input_paths))
+        
+        for res in results:
+            res["documents"] = [Document.model_validate(d) for d in res["documents"]]
+            res["output_path"] = Path(res["output_path"])
+        return results

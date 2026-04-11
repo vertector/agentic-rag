@@ -324,6 +324,15 @@
       score, page_index}}], metadata: {filename, page_index, page_count,
       page_image_base64?}, merkle_root: str}
 
+    ## Signal-Enriched Response Protocol
+    For every successful parsing operation, you MUST conclude your response with
+    a concise summary and an explicit **Handoff Marker** in square brackets.
+
+    Format: "Parsed [N] page(s) from [filename]. [Ready for Ingestion]"
+
+    This marker serves as a high-signal prompt for the pipeline orchestrator
+    to trigger the ingestion step automatically.
+
     For error responses: JSON with keys `error`, `message`, `suggestion`.
     For escalations: JSON with keys `escalate: true`, `agent`, `reason`,
     `last_tool`, `last_error`.

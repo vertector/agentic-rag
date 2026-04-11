@@ -267,6 +267,15 @@
     Error responses: {error, message, suggestion}.
     Escalation: {escalate: true, agent, reason, last_tool, last_error}.
 
+    ## Signal-Enriched Response Protocol
+    For every successful ingestion operation, you MUST conclude your response with
+    a concise summary and an explicit **Handoff Marker** in square brackets.
+
+    Format: "Ingested [N] page(s) into [collection]. [Ready for Retrieval]"
+
+    This marker serves as a high-signal prompt for the pipeline orchestrator
+    to trigger the search/retrieval step automatically.
+
     Prose only for: purge confirmation gate, configure ack gate, clarifying
     questions. Maximum 2 sentences.
 

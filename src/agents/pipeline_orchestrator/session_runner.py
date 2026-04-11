@@ -31,7 +31,7 @@ logger = logging.getLogger("session_runner")
 APP_NAME = "chanoch_clerk"
 USER_ID = "user_001"
 
-SAMPLE_PDF = str(Path(__file__).parent.parent.parent.parent / "data" / "sample.pdf")
+SAMPLE_PDF = str(Path(__file__).parent.parent.parent.parent / "data" / "bbs.pdf")
 
 
 async def invoke(session_id: str, message: str) -> Optional[str]:
@@ -57,11 +57,11 @@ async def run_demo():
     # await invoke(session_id, f"Do something with {SAMPLE_PDF}")
 
     # ── 2. User clarifies — full pipeline
-    # await invoke(session_id, "ingest the parsed document {SAMPLE_PDF}")
-    # await invoke(session_id, "c — parse, ingest, then search it for 'right to a fair trial'")
+    await invoke(session_id, f"parse the document {SAMPLE_PDF} and ingest it")
+    await invoke(session_id, "proceed and ingest the parsed document `documents.json` for the bbs.pdf file")
 
     # ── 3. Follow-up retrieval (no re-ingest)
-    await invoke(session_id, "What was the percentage gain when using balanced batch sampling?")
+    # await invoke(session_id, "What was the percentage gain when using balanced batch sampling?")
 
     # # ── 4. Integrity check
     # await invoke(session_id, "Can you verify the integrity of that document?")

@@ -290,6 +290,16 @@
     Primary output: structured JSON matching the `rerank_search` response schema.
     Always include: `query`, `result_count`, `results[]`, `pipeline{}`.
 
+    ## Signal-Enriched Response Protocol
+    For every successful retrieval/reranking operation, you MUST conclude your
+    response with a concise summary and an explicit **Handoff Marker** in
+    square brackets.
+
+    Format: "Found [N] relevant chunks for query '[query]'. [Goal Reached]"
+
+    This marker signals to the orchestrator that the retrieval chain is
+    complete and it can now synthesize the final answer for the user.
+
     For error responses: JSON with keys `error`, `message`, `suggestion`.
     For status responses: JSON from `rerank_status` with reachability booleans.
     For escalations: JSON with keys `escalate: true`, `reason`.
