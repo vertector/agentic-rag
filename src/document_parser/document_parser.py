@@ -199,6 +199,7 @@ class DocumentParser:
         with open(md_path, "r", encoding="utf-8") as f: md_data = f.read()
 
         page_index = (json_data.get("page_index") or 0) + 1
+        ignored = set(self._settings.markdown_ignore_labels or [])
         chunks = [
             Chunk(
                 chunk_markdown=data.get("block_content", ""),
@@ -210,6 +211,7 @@ class DocumentParser:
                 ),
             )
             for data, item in zip(json_data.get("parsing_res_list", []), json_data.get("layout_det_res", {}).get("boxes", []))
+            if data.get("block_label", "unknown") not in ignored
         ]
 
         output_img = page_output.get("doc_preprocessor_res", {}).get("output_img")

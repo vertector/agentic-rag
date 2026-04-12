@@ -41,6 +41,11 @@ metadata:
    Do NOT include fields that were not in the request; they will be inherited
    from the server's current settings.
 
+   ⚠️  CRITICAL: Pass these overrides directly as params to `parse_document`.
+   Do NOT call `configure_parser` first. configure_parser is for persistent
+   session-wide changes only. Per-call overrides on `parse_document` take effect
+   for that call only, with no re-init cost and no state mutation.
+
 4. **Call `parse_document`** with the resolved params dict.
 
 5. **On success**:

@@ -438,11 +438,33 @@ def _build_settings_override(params: ParseDocumentInput) -> Optional[PipelineSet
     """
     Build a per-call PipelineSettings only when the caller supplied overrides.
     Returns None if no overrides were given (parser uses its current settings).
+
+    List fields (e.g. markdown_ignore_labels) use default_factory=list on the
+    input model, so their default value is [] rather than None.  A plain
+    ``is not None`` guard therefore treats the default [] as an explicit override
+    on every call, causing two problems:
+
+    1. A new DocumentParser is needlessly rebuilt on every parse_document call,
+       even when the caller supplied no overrides at all.
+    2. More critically: the new DocumentParser hits the same Redis cache keyed
+       only on file content, so it returns the cached result from the previous
+       parse — which was run under the original settings — silently discarding
+       the caller's actual overrides (e.g. markdown_ignore_labels=["header","footer"]).
+
+    Fix: for list-typed fields, only treat the value as a caller-supplied
+    override when it is non-empty.  Scalar fields keep the ``is not None`` guard.
     """
+    def _is_set(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, list):
+            return len(value) > 0  # [] is the pydantic default; non-empty means caller set it
+        return True
+
     overrides = {
         f: getattr(params, f)
         for f in _OVERRIDE_FIELDS
-        if getattr(params, f, None) is not None
+        if _is_set(getattr(params, f, None))
     }
     if not overrides:
         return None
@@ -503,17 +525,108 @@ def _write_base64_to_tempfile(b64_content: str, filename: str) -> str:
 )
 async def parse_document(
     ctx: Context,
-    params: ParseDocumentInput,
+    # --- file delivery (exactly one of file_path or file_content_base64+filename) ---
+    file_path: Optional[str] = None,
+    file_content_base64: Optional[str] = None,
+    filename: Optional[str] = None,
+    # --- pipeline flags ---
+    use_ocr_for_image_block: Optional[bool] = None,
+    use_doc_orientation_classify: Optional[bool] = None,
+    use_doc_unwarping: Optional[bool] = None,
+    use_chart_recognition: Optional[bool] = None,
+    use_layout_detection: Optional[bool] = None,
+    use_seal_recognition: Optional[bool] = None,
+    format_block_content: Optional[bool] = None,
+    merge_layout_blocks: Optional[bool] = None,
+    merge_tables: Optional[bool] = None,
+    relevel_titles: Optional[bool] = None,
+    markdown_ignore_labels: Optional[List[str]] = None,
+    pipeline_version: Optional[str] = None,
+    # --- layout tuning ---
+    layout_threshold: Optional[float] = None,
+    layout_nms: Optional[bool] = None,
+    layout_unclip_ratio: Optional[float] = None,
+    layout_merge_bboxes_mode: Optional[str] = None,
+    layout_shape_mode: Optional[str] = None,
+    # --- VLM inference ---
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+    max_new_tokens: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
+    prompt_label: Optional[str] = None,
+    # --- pixel limits ---
+    min_pixels: Optional[int] = None,
+    max_pixels: Optional[int] = None,
+    # --- VLM backend ---
+    vl_rec_api_model_name: Optional[str] = None,
+    vl_rec_backend: Optional[str] = None,
+    vl_rec_server_url: Optional[str] = None,
+    vl_rec_api_key: Optional[str] = None,
+    # --- response options ---
+    include_page_images: bool = False,
 ) -> str:
     """
     Parse a single document (PDF or image) using PaddleOCRVL.
 
-    Provide EITHER file_path (local path) OR file_content_base64 + filename (not both).
-    Returns a JSON array of per-page Document objects with markdown, chunks, and metadata.
+    Supply EITHER file_path (local path on the server) OR file_content_base64 + filename.
+    All pipeline settings are optional — omit them to use the server's current defaults.
+    Returns a JSON object with "documents" (array of per-page Document objects with
+    markdown, chunks, and metadata) and "output_path".
 
-    Args:
-        params (ParseDocumentInput): Encapsulated JSON object containing all settings and delivery methods.
+    Per-call override examples:
+      Suppress headers/footers : markdown_ignore_labels=["header", "footer"]
+      Enable chart recognition  : use_chart_recognition=true
+      High-accuracy mode        : use_doc_unwarping=true, max_new_tokens=8192
     """
+    # Construct and validate via ParseDocumentInput (preserves all field validators).
+    # All fields are Optional at the function level so the LLM schema stays flat;
+    # ParseDocumentInput's _check_delivery_mode validator enforces the mutual-
+    # exclusivity and required-field rules at call time.
+    try:
+        params = ParseDocumentInput(**{k: v for k, v in {
+            "file_path": file_path,
+            "file_content_base64": file_content_base64,
+            "filename": filename,
+            "use_ocr_for_image_block": use_ocr_for_image_block,
+            "use_doc_orientation_classify": use_doc_orientation_classify,
+            "use_doc_unwarping": use_doc_unwarping,
+            "use_chart_recognition": use_chart_recognition,
+            "use_layout_detection": use_layout_detection,
+            "use_seal_recognition": use_seal_recognition,
+            "format_block_content": format_block_content,
+            "merge_layout_blocks": merge_layout_blocks,
+            "merge_tables": merge_tables,
+            "relevel_titles": relevel_titles,
+            "markdown_ignore_labels": markdown_ignore_labels,
+            "pipeline_version": pipeline_version,
+            "layout_threshold": layout_threshold,
+            "layout_nms": layout_nms,
+            "layout_unclip_ratio": layout_unclip_ratio,
+            "layout_merge_bboxes_mode": layout_merge_bboxes_mode,
+            "layout_shape_mode": layout_shape_mode,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": repetition_penalty,
+            "prompt_label": prompt_label,
+            "min_pixels": min_pixels,
+            "max_pixels": max_pixels,
+            "vl_rec_api_model_name": vl_rec_api_model_name,
+            "vl_rec_backend": vl_rec_backend,
+            "vl_rec_server_url": vl_rec_server_url,
+            "vl_rec_api_key": vl_rec_api_key,
+            "include_page_images": include_page_images,
+        }.items() if v is not None or k == "include_page_images"})
+    except Exception as exc:
+        return json.dumps({
+            "error": "ValidationError",
+            "message": str(exc),
+            "suggestion": (
+                "Provide either file_path or file_content_base64+filename (not both). "
+                "Check field values against supported types."
+            ),
+        })
+
     logger.info("Preparing file...")
 
     tmp_path: Optional[str] = None
@@ -553,10 +666,12 @@ async def parse_document(
 
         loop = asyncio.get_running_loop()
         # parse returns Tuple[List[Document], Path]
+        # bypass_cache=True when per-call overrides are active: the cache key is
+        # SHA-256(file content) only — settings are not included — so a hit would
+        # silently return a result parsed under different settings.
         documents, output_file = await loop.run_in_executor(
             None,
-            active_parser.parse,
-            parse_path,
+            lambda: active_parser.parse(parse_path, bypass_cache=bool(settings_override)),
         )
 
         logger.info("Serialising results...")

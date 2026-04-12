@@ -141,7 +141,7 @@ class Metadata(_Base):
         default="general",
         description=(
             "Document domain used as a Qdrant filter key. "
-            "Examples: 'legal', 'medical', 'finance'. "
+            "Examples: 'research', 'medical', 'finance'. "
             "Has no effect on Merkle hashing — purely a routing label."
         ),
     )

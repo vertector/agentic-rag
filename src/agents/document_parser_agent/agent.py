@@ -24,11 +24,16 @@ Toolset:
     Tools: parse_document, parse_batch, configure_parser, get_parser_settings
   · SkillToolset → parse-single, batch-parse
 
-Deployment: InMemory* for local/dev. Swap to persistent services for production.
+Context optimisation:
+  · static_instruction           — stable XML loaded once; Gemini prefix-cache eligible
+  · instruction                  — turn-level callable, runtime augments only (not cached)
+  · App.context_cache_config     — Gemini 2.0+ token-level caching (no-op for LiteLlm/Ollama)
+  · App.events_compaction_config — model-agnostic sliding-window summarisation
 
 Exports:
-  root_agent   — for `adk web` / `adk run` discovery
-  runner       — pre-built Runner for programmatic use
+  app          — for `adk web` / `adk run` discovery (App takes precedence over root_agent)
+  root_agent   — secondary alias for backward compat
+  runner       — pre-built Runner for programmatic / test use
 """
 
 from __future__ import annotations
@@ -37,6 +42,10 @@ import logging
 import pathlib
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.apps.app import App, EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.models import Gemini
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -55,7 +64,7 @@ from .callbacks import (
     before_tool_callback,
     after_tool_callback,
 )
-from .prompts import build_instruction
+from .prompts import _STATIC_INSTRUCTION, build_instruction
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -68,7 +77,6 @@ logger = logging.getLogger("document_parser_agent")
 _AGENT_DIR = pathlib.Path(__file__).parent
 _SKILLS_DIR = _AGENT_DIR / "skills"
 
-# Resolve server.py relative to src root — same pattern as reranker_agent.
 _SRC_ROOT = _AGENT_DIR.parent.parent   # src/agents/document_parser_agent → src
 _SERVER_PATH = _SRC_ROOT / "document_parser" / "server.py"
 
@@ -116,7 +124,15 @@ _skill_toolset = skill_toolset.SkillToolset(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Agent Definition
+# Agent
+#
+# static_instruction  → stable XML system prompt; prefix-cached by Gemini's
+#                       context-caching layer (unchanged between turns).
+#                       Never inject session state here.
+#
+# instruction         → turn-level callable; returns only the runtime augments
+#                       block (or "" when nothing active). ADK appends this
+#                       after static_instruction each turn.
 # ─────────────────────────────────────────────────────────────────────────────
 
 document_parser_agent = LlmAgent(
@@ -129,8 +145,9 @@ document_parser_agent = LlmAgent(
         "and parser settings inspection. Output is the canonical input format for "
         "ingestion_agent."
     ),
-    model='gemini-3.1-flash-lite-preview', #_model,
-    instruction=build_instruction,  # dynamic callable
+    model="gemini-3.1-flash-lite-preview",  # swap to _model for local Ollama dev
+    static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here
+    instruction=build_instruction,           # dynamic state injection per turn
     output_key="parser:agent_output",
     tools=[
         _parser_mcp,
@@ -144,15 +161,61 @@ document_parser_agent = LlmAgent(
     after_tool_callback=after_tool_callback,
 )
 
-# Required for `adk web` / `adk run`
+# Secondary discovery alias (App takes precedence with adk CLI)
 root_agent = document_parser_agent
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Services + Runner
+# Services
 # ─────────────────────────────────────────────────────────────────────────────
 
 session_service = InMemorySessionService()
 artifact_service = InMemoryArtifactService()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Context optimisation
+#
+# ContextCacheConfig  — Gemini 2.0+ only; caches the stable prompt prefix.
+#                       · min_tokens=2048    skip caching for short contexts
+#                       · ttl_seconds=900    15-min TTL; aligns with a work session
+#                       · cache_intervals=10 hard-refresh every 10 invocations
+#                       No-op for LiteLlm/Ollama — safe to leave on.
+#
+# EventsCompactionConfig — model-agnostic sliding-window summarisation.
+#                       parse_batch calls can produce large tool-response events;
+#                       compaction at interval=4 keeps the context lean across
+#                       multi-document sessions.
+#                       · compaction_interval=4  summarise after every 4 turns
+#                       · overlap_size=1         carry 1 prior event for continuity
+# ─────────────────────────────────────────────────────────────────────────────
+
+_summariser = LlmEventSummarizer(
+    llm=Gemini(model="gemini-2.5-flash"),
+)
+
+# App is the CLI-discoverable top-level container (ADK v1.14.0+).
+# Variable MUST be named `app` for `adk web` / `adk run` auto-discovery.
+app = App(
+    name="chanoch_clerk_parser",
+    root_agent=document_parser_agent,
+    context_cache_config=ContextCacheConfig(
+        min_tokens=2048,
+        ttl_seconds=900,
+        cache_intervals=10,
+    ),
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=4,  # lower than orchestrator — parse events are large
+        overlap_size=1,
+        summarizer=_summariser,
+    ),
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runner  (programmatic / test use)
+#
+# The App above is the authoritative entry point for `adk web` / `adk run`.
+# Use the Runner below for direct programmatic invocation and unit tests.
+# App-level caching and compaction are active only via the App execution path.
+# ─────────────────────────────────────────────────────────────────────────────
 
 runner = Runner(
     agent=document_parser_agent,
@@ -163,6 +226,6 @@ runner = Runner(
 
 logger.info(
     "document_parser_agent initialised — model=%s server=%s",
-    "ollama_chat/gemma4:e4b-it-q4_K_M",
+    "gemini-3.1-flash-lite-preview",
     _SERVER_PATH,
 )

@@ -116,15 +116,20 @@
       confirm settings before a large batch.
 
     **configure_parser**
-    - Trigger: orchestrator requests a change to VLM backend, pipeline flags,
-      layout thresholds, or inference parameters.
+    - Trigger: orchestrator requests a PERSISTENT change to VLM backend, pipeline
+      flags, layout thresholds, or inference parameters that must apply to ALL
+      subsequent calls in the session.
+    - Do NOT call configure_parser for per-call-only overrides. If the request
+      says "for this call only", "just for this file", or specifies overrides
+      alongside a single parse request, pass those fields directly as
+      PipelineSettings fields inside the `parse_document` or `parse_batch` call.
+      configure_parser is a global mutation with a ~30s warm-up cost — never use
+      it when a per-call override is sufficient.
     - Effect: resets the lazy-loaded PaddleOCRVL instance — next parse call will
       re-initialise (~30s). Set `parser:warm=false` in state after calling.
     - `prompt_label` override warning: setting a global prompt_label forces ALL
       blocks through one prompt and breaks table structure recognition. Warn the
       orchestrator before applying.
-    - Sequencing: always call before `parse_document` or `parse_batch` in the
-      same turn if settings must change for that call.
 
     **get_parser_settings**
     - Trigger: orchestrator asks to inspect current settings; also call before
@@ -143,15 +148,37 @@
   <examples>
 
     <example>
-      <scenario>Standard PDF parse via local path</scenario>
+      <scenario>Per-call PipelineSettings overrides — do NOT use configure_parser</scenario>
       <user_input>
-        Parse /data/legal/contract_v2.pdf. Category: legal.
+        Parse /data/report.pdf. For this call only: suppress 'header' and 'footer'
+        labels from markdown output, and enable chart recognition.
+      </user_input>
+      <ideal_response>
+        [does NOT call configure_parser — "for this call only" means per-call override]
+        [calls parse_document with:
+          file_path="/data/report.pdf",
+          markdown_ignore_labels=["header", "footer"],
+          use_chart_recognition=true]
+        Returns full JSON array of per-page Document dicts.
+      </ideal_response>
+      <rationale>
+        Per-call overrides are passed directly as PipelineSettings fields on the
+        parse_document call itself. configure_parser is for persistent session-wide
+        changes only. Using configure_parser here would (a) incur a ~30s re-init
+        cost, (b) permanently change the session settings, and (c) require a second
+        configure_parser call to restore them — all avoidable.
+      </rationale>
+    </example>
+
+
+      <user_input>
+        Parse /data/sample.pdf. Category: research.
       </user_input>
       <ideal_response>
         [warns if parser:warm absent — cold-start latency ~30s]
         [calls parse_document with file_path, include_page_images=false]
         [persists parser:last_parsed_file, parser:last_results to state]
-        [saves artifact parsed_contract_v2_{session_id}.json]
+        [saves artifact parsed_sample_{session_id}.json]
         [sets parser:warm=true]
         Returns full JSON array of per-page Document dicts with merkle_root fields.
       </ideal_response>
@@ -164,7 +191,7 @@
     <example>
       <scenario>Base64 in-memory parse</scenario>
       <user_input>
-        Parse this invoice: file_content_base64=&lt;bytes&gt;, filename=invoice_Q3.pdf
+        Parse this paper: file_content_base64=&lt;bytes&gt;, filename=bbs.pdf
       </user_input>
       <ideal_response>
         [calls parse_document with file_content_base64 + filename]
@@ -180,7 +207,7 @@
     <example>
       <scenario>Batch parse with worker count warning</scenario>
       <user_input>
-        Parse these 8 PDFs in parallel: [a.pdf, b.pdf, …, h.pdf]. Use 8 workers.
+        Parse these 8 PDFs in parallel: [sample.pdf, bbs.pdf, …, h.pdf]. Use 8 workers.
       </user_input>
       <ideal_response>
         "8 workers will load 8 separate PaddleOCRVL instances simultaneously
@@ -330,8 +357,8 @@
 
     Format: "Parsed [N] page(s) from [filename]. [Ready for Ingestion]"
 
-    This marker serves as a high-signal prompt for the pipeline orchestrator
-    to trigger the ingestion step automatically.
+    This marker signals to the orchestrator that the document is ready to be
+    passed to the ingestion_agent.
 
     For error responses: JSON with keys `error`, `message`, `suggestion`.
     For escalations: JSON with keys `escalate: true`, `agent`, `reason`,
