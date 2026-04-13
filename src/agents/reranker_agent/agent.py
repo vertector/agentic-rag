@@ -17,20 +17,22 @@ Rationale:
   section provides the sequential heuristic when a fixed path IS the right one.
 
 Model: LiteLlm → ollama_chat/gemma4:e4b-it-q4_K_M (local Ollama instance).
-  Gemma 4 e4b-it-q4_K_M is a 4-bit quantised instruction-tuned model — fast
-  enough for sub-agent use cases while fitting in commodity VRAM.
 
 Toolset:
   · MCPToolset → reranker_mcp FastMCP server (server.py, stdio transport)
     Tools: rerank_search, rerank_configure, rerank_status, rerank_cache_clear
   · SkillToolset → rerank-execution, citation-formatting
 
-Deployment target: local (InMemorySessionService + InMemoryArtifactService).
-  Swap to DatabaseSessionService + GCS/VertexAI ArtifactService for production.
+Context optimisation:
+  · static_instruction           — stable XML loaded once; Gemini prefix-cache eligible
+  · instruction                  — turn-level callable, runtime augments only (not cached)
+  · App.context_cache_config     — Gemini 2.0+ token-level caching (no-op for LiteLlm/Ollama)
+  · App.events_compaction_config — model-agnostic sliding-window summarisation
 
-Module exports:
-  root_agent   — required by `adk web` / `adk run` for automatic discovery.
-  runner       — pre-built Runner for programmatic use (session_runner.py or tests).
+Exports:
+  app          — for `adk web` / `adk run` discovery (App takes precedence over root_agent)
+  root_agent   — secondary alias for backward compat
+  runner       — pre-built Runner for programmatic / test use
 """
 
 from __future__ import annotations
@@ -39,6 +41,10 @@ import logging
 import pathlib
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.apps.app import App, EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
+from google.adk.models import Gemini
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -57,7 +63,7 @@ from .callbacks import (
     before_tool_callback,
     after_tool_callback,
 )
-from .prompts import build_instruction
+from .prompts import _STATIC_INSTRUCTION, build_instruction
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -70,17 +76,11 @@ logger = logging.getLogger("reranker_agent")
 _AGENT_DIR = pathlib.Path(__file__).parent
 _SKILLS_DIR = _AGENT_DIR / "skills"
 
-# Path to the reranker_pipeline server.py — resolved relative to the project
-# src root so it works regardless of the CWD at invocation.
 _SRC_ROOT = _AGENT_DIR.parent.parent  # src/agents/reranker_agent → src → project root/src
 _SERVER_PATH = _SRC_ROOT / "reranker_pipeline" / "server.py"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Model — LiteLlm → local Ollama
-# ─────────────────────────────────────────────────────────────────────────────
-# LiteLlm is the ADK bridge for non-Google models.
-# `ollama_chat/` prefix tells LiteLLM to use the Ollama chat completion endpoint.
-# api_base must point to the running Ollama instance (default port 11434).
+# Model
 # ─────────────────────────────────────────────────────────────────────────────
 
 _model = LiteLlm(
@@ -90,10 +90,6 @@ _model = LiteLlm(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MCP Toolset — reranker_mcp (stdio)
-# ─────────────────────────────────────────────────────────────────────────────
-# Spawns server.py as a subprocess via `uv run python`.
-# tool_filter restricts ADK to only expose the 4 reranker tools, preventing
-# accidental exposure of any future tools added to server.py.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _reranker_mcp = MCPToolset(
@@ -113,10 +109,7 @@ _reranker_mcp = MCPToolset(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SkillToolset — rerank-execution + citation-formatting
-# ─────────────────────────────────────────────────────────────────────────────
-# Skills are loaded from the `skills/` directory adjacent to agent.py.
-# Each skill directory name must match the `name` field in its SKILL.md.
+# SkillToolset
 # ─────────────────────────────────────────────────────────────────────────────
 
 _rerank_execution_skill = load_skill_from_dir(_SKILLS_DIR / "rerank-execution")
@@ -127,7 +120,15 @@ _skill_toolset = skill_toolset.SkillToolset(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Agent Definition
+# Agent
+#
+# static_instruction  → stable XML system prompt; prefix-cached by Gemini's
+#                       context-caching layer (unchanged between turns).
+#                       Never inject session state here.
+#
+# instruction         → turn-level callable; returns only the runtime augments
+#                       block (or "" when nothing active). ADK appends this
+#                       after static_instruction each turn.
 # ─────────────────────────────────────────────────────────────────────────────
 
 reranker_agent = LlmAgent(
@@ -138,18 +139,14 @@ reranker_agent = LlmAgent(
         "Call for: document retrieval, ranked chunk selection, point-in-time "
         "Merkle snapshot queries, reranker diagnostics, and CE configuration."
     ),
-    model="gemini-3.1-flash-lite-preview", #_model,
-
-    # Dynamic instruction — personalised per turn from session state.
-    # Loads system_prompt.xml as the base and appends runtime augments.
-    instruction=build_instruction,
+    model="gemini-3.1-flash-lite-preview",  # swap to _model for local Ollama dev
+    static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here
+    instruction=build_instruction,           # dynamic state injection per turn
     output_key="reranker:agent_output",
     tools=[
-        _reranker_mcp,     # MCP tools: rerank_search, configure, status, cache_clear
-        _skill_toolset,    # Skills: rerank-execution, citation-formatting
+        _reranker_mcp,
+        _skill_toolset,
     ],
-
-    # ── All 6 callbacks wired for production observability
     before_agent_callback=before_agent_callback,
     after_agent_callback=after_agent_callback,
     before_model_callback=before_model_callback,
@@ -158,19 +155,62 @@ reranker_agent = LlmAgent(
     after_tool_callback=after_tool_callback,
 )
 
-# Required alias: `adk web` and `adk run` discover the agent via `root_agent`.
-# The pipeline_orchestrator imports `reranker_agent` directly as a sub-agent.
+# Secondary discovery alias (App takes precedence with adk CLI)
 root_agent = reranker_agent
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Session & Artifact Services + Runner (for local/test use)
-# ─────────────────────────────────────────────────────────────────────────────
-# InMemory* services are appropriate for local dev and testing.
-# Production: swap to a persistent SessionService and a cloud ArtifactService.
+# Services
 # ─────────────────────────────────────────────────────────────────────────────
 
 session_service = InMemorySessionService()
 artifact_service = InMemoryArtifactService()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Context optimisation
+#
+# ContextCacheConfig  — Gemini 2.0+ only; caches the stable prompt prefix.
+#                       · min_tokens=2048    skip caching for short contexts
+#                       · ttl_seconds=900    15-min TTL; aligns with a work session
+#                       · cache_intervals=10 hard-refresh every 10 invocations
+#                       No-op for LiteLlm/Ollama — safe to leave on.
+#
+# EventsCompactionConfig — model-agnostic sliding-window summarisation.
+#                       rerank_search responses include ranked chunk payloads
+#                       with scores, metadata, and bounding boxes. Compaction
+#                       at interval=4 prevents context bloat in multi-query
+#                       research sessions.
+#                       · compaction_interval=4  summarise after every 4 turns
+#                       · overlap_size=1         carry 1 prior event for continuity
+# ─────────────────────────────────────────────────────────────────────────────
+
+_summariser = LlmEventSummarizer(
+    llm=Gemini(model="gemini-2.5-flash"),
+)
+
+# App is the CLI-discoverable top-level container (ADK v1.14.0+).
+# Variable MUST be named `app` for `adk web` / `adk run` auto-discovery.
+app = App(
+    name="chanoch_clerk_reranker",
+    root_agent=reranker_agent,
+    context_cache_config=ContextCacheConfig(
+        min_tokens=2048,
+        ttl_seconds=900,
+        cache_intervals=10,
+    ),
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=4,  # lower than orchestrator — ranked chunk payloads are large
+        overlap_size=1,
+        summarizer=_summariser,
+    ),
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runner  (programmatic / test use)
+#
+# The App above is the authoritative entry point for `adk web` / `adk run`.
+# Use the Runner below for direct programmatic invocation and unit tests.
+# App-level caching and compaction are active only via the App execution path.
+# ─────────────────────────────────────────────────────────────────────────────
 
 runner = Runner(
     agent=reranker_agent,
@@ -181,6 +221,6 @@ runner = Runner(
 
 logger.info(
     "reranker_agent initialised — model=%s server=%s",
-    "ollama_chat/gemma4:e4b-it-q4_K_M",
+    "gemini-3.1-flash-lite-preview",
     _SERVER_PATH,
 )

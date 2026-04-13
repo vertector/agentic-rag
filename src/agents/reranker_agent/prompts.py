@@ -2,19 +2,16 @@
 prompts.py — Reranker Agent Dynamic Instruction Builder
 =========================================================
 
-Provides both the static instruction loader (reads system_prompt.xml) and a
-dynamic instruction callable for cases where the instruction needs to change
-based on session state (e.g. degraded-mode when BM25 is unavailable, or when
-a specific Merkle snapshot is pinned for the session).
+Prompt split for context caching:
 
-Usage in agent.py:
+  static_instruction = _STATIC_INSTRUCTION   ← stable XML loaded once at import;
+                                               eligible for Gemini prefix caching.
+                                               Never put session state here.
 
-    from .prompts import build_instruction
-
-    agent = LlmAgent(
-        ...
-        instruction=build_instruction,  # callable → dynamic per-turn
-    )
+  instruction        = build_instruction      ← turn-level callable; returns only
+                                               the runtime augments block (or ""
+                                               when nothing is active). ADK appends
+                                               this after static_instruction each turn.
 """
 
 from __future__ import annotations
@@ -31,40 +28,54 @@ logger = logging.getLogger("reranker_agent.prompts")
 _PROMPT_DIR = pathlib.Path(__file__).parent
 _STATIC_PROMPT_PATH = _PROMPT_DIR / "system_prompt.xml"
 
-# Cache the static XML after first read — it doesn't change at runtime.
-_STATIC_PROMPT: str | None = None
-
+# ---------------------------------------------------------------------------
+# _STATIC_INSTRUCTION
+#
+# Loaded once at import time so the value is a plain str — required by ADK's
+# static_instruction parameter. Gemini caches this prefix; any mutation busts
+# the cache, so this value must never change after the process starts.
+# ---------------------------------------------------------------------------
 
 def _load_static_prompt() -> str:
-    """Read and cache system_prompt.xml from disk."""
-    global _STATIC_PROMPT
-    if _STATIC_PROMPT is None:
-        try:
-            _STATIC_PROMPT = _STATIC_PROMPT_PATH.read_text(encoding="utf-8")
-            logger.info("Loaded system prompt from %s (%d chars)", _STATIC_PROMPT_PATH, len(_STATIC_PROMPT))
-        except FileNotFoundError:
-            logger.error("system_prompt.xml not found at %s", _STATIC_PROMPT_PATH)
-            _STATIC_PROMPT = "<system_prompt><goal>Hybrid document reranker sub-agent.</goal></system_prompt>"
-    return _STATIC_PROMPT
+    try:
+        text = _STATIC_PROMPT_PATH.read_text(encoding="utf-8")
+        logger.info(
+            "Loaded system prompt from %s (%d chars)",
+            _STATIC_PROMPT_PATH, len(text),
+        )
+        return text
+    except FileNotFoundError:
+        logger.error("system_prompt.xml not found at %s", _STATIC_PROMPT_PATH)
+        return "<system_prompt><goal>Hybrid document reranker sub-agent.</goal></system_prompt>"
 
+
+_STATIC_INSTRUCTION: str = _load_static_prompt()
+
+
+# ---------------------------------------------------------------------------
+# build_instruction — dynamic turn-level augments only
+#
+# Returns the runtime context block that ADK appends after static_instruction.
+# Returns "" (empty string) when no session state is active — ADK treats this
+# as a no-op and does not append anything to the prompt.
+#
+# DO NOT return or re-include _STATIC_INSTRUCTION here. With static_instruction
+# set on the LlmAgent, the XML is already present in every prompt. Repeating it
+# would double the static prefix and break Gemini's prefix-cache hit.
+# ---------------------------------------------------------------------------
 
 def build_instruction(context: "InvocationContext") -> str:
     """
     Dynamic instruction builder — called by ADK on every agent turn.
 
-    Base: always loads system_prompt.xml.
-    Augmentations (appended as a runtime context block):
+    Augments (appended as a runtime context block when relevant):
       - Degraded-mode warning if BM25 is known unavailable (from state).
       - Active Merkle snapshot banner if version_root is pinned.
       - Alpha override note if CE weight was changed at runtime.
+      - Slow-operation acknowledgement if received from the user.
       - Escalation lockout if an escalation is already pending this session.
-
-    Returns:
-        str: The complete instruction string to use for this turn.
     """
-    base = _load_static_prompt()
     state = context.session.state
-
     augments: list[str] = []
 
     # ── Degraded mode: BM25 unavailable (set by after_tool_callback on status check)
@@ -91,6 +102,14 @@ def build_instruction(context: "InvocationContext") -> str:
             "Mention this if the orchestrator asks about scoring configuration."
         )
 
+    # ── Slow operation acknowledgement
+    if state.get("reranker:slow_op_acknowledged"):
+        augments.append(
+            "✅  ACKNOWLEDGEMENT RECEIVED: The user/orchestrator has explicitly acknowledged "
+            "the latency impact of slow operations (CE model swap or connection changes). "
+            "You are now AUTHORIZED to proceed with the requested rerank_configure call."
+        )
+
     # ── Escalation lockout
     if state.get("reranker:escalation_pending"):
         augments.append(
@@ -99,8 +118,8 @@ def build_instruction(context: "InvocationContext") -> str:
         )
 
     if not augments:
-        return base
+        return ""
 
-    runtime_block = "\n\n<!-- RUNTIME CONTEXT (injected by prompts.py) -->\n"
+    runtime_block = "<!-- RUNTIME CONTEXT (injected by prompts.py) -->\n"
     runtime_block += "\n".join(f"  {a}" for a in augments)
-    return base + runtime_block
+    return runtime_block
