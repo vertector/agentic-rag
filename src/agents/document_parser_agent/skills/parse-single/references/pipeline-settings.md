@@ -22,8 +22,8 @@
 | `pipeline_version` | `"v1.5"` | Use `"v1"` for older PaddleOCR |
 | `layout_threshold` | `0.3` | Raise to reduce false positives |
 | `layout_nms` | `True` | Non-maximum suppression for boxes |
-| `layout_unclip_ratio` | `1.0` | Expand layout boxes (>1 = larger) |
-| `layout_merge_bboxes_mode` | `"union"` | `"union"` or `"large"` |
+| `layout_unclip_ratio` | `null` | Expand layout boxes (>1 = larger). null = use YAML default [1.0, 1.0] |
+| `layout_merge_bboxes_mode` | `null` | `"union"` or `"large"`. null = use per-class YAML defaults |
 | `layout_shape_mode` | `"auto"` | `"auto"`, `"rectangle"` |
 | `temperature` | `0.0` | 0 = deterministic VLM |
 | `top_p` | `1.0` | Nucleus sampling (irrelevant at temp=0) |

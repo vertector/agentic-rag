@@ -66,6 +66,46 @@ def _worker_parse(input_path: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# Fields that affect parse output and must be included in the cache key.
+# Infrastructure fields (vl_rec_backend, vl_rec_server_url, vl_rec_api_key) are
+# excluded — they determine how the VLM is reached, not what it produces, so
+# switching backends pointing at the same model reuses cached results correctly.
+_CACHE_KEY_SETTINGS = (
+    "use_ocr_for_image_block",
+    "use_doc_orientation_classify",
+    "use_doc_unwarping",
+    "use_chart_recognition",
+    "use_layout_detection",
+    "use_seal_recognition",
+    "format_block_content",
+    "merge_layout_blocks",
+    "merge_tables",
+    "relevel_titles",
+    "markdown_ignore_labels",
+    "pipeline_version",
+    "layout_threshold",
+    "layout_nms",
+    "layout_unclip_ratio",
+    "layout_merge_bboxes_mode",
+    "layout_shape_mode",
+    "temperature",
+    "top_p",
+    "max_new_tokens",
+    "repetition_penalty",
+    "prompt_label",
+    "vl_rec_api_model_name",
+    # min_pixels, max_pixels and vlm_extra_args are intentionally excluded:
+    # min_pixels/max_pixels are silently nulled by PipelineSettings validators
+    # for backends that don't support them (e.g. mlx-vlm-server), producing
+    # different hashes for functionally identical parses. vlm_extra_args is an
+    # arbitrary pass-through dict whose serialisation is not guaranteed stable.
+)
+
+# Baseline defaults for delta-hashing. Computed once at import time from a
+# default PipelineSettings instance so it stays in sync with the schema.
+_PIPELINE_DEFAULTS: dict = PipelineSettings().model_dump()
+
+
 class DocumentParser:
     """
     Production-ready document parser using PaddleOCRVL with 3-tier optimization.
@@ -104,6 +144,28 @@ class DocumentParser:
     @property
     def settings(self) -> PipelineSettings:
         return self._settings
+
+    def _get_settings_hash(self) -> str:
+        """
+        Return a short hash representing only the output-affecting settings that
+        differ from PipelineSettings defaults.
+
+        Hashing the full settings snapshot causes spurious cache misses when the
+        LLM agent sends redundant fields (fields it wasn't asked to change but
+        includes anyway, e.g. relevel_titles=True matching the default). By
+        hashing only the delta from defaults, two parses with the same meaningful
+        overrides produce the same cache key regardless of which extra fields the
+        LLM happened to include in the tool call.
+        """
+        current = self._settings.model_dump()
+        defaults = _PIPELINE_DEFAULTS
+        delta = {
+            k: current[k]
+            for k in _CACHE_KEY_SETTINGS
+            if k in current and current[k] != defaults.get(k)
+        }
+        blob = json.dumps(delta, sort_keys=True, default=str).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
 
     def _get_pipeline(self):
         """Thread-safe singleton for VLM pipeline."""
@@ -231,15 +293,20 @@ class DocumentParser:
         if not document_path.exists(): raise FileNotFoundError(f"No file at {document_path}")
 
         file_hash = self._get_file_hash(document_path)
-        self._update_lru(file_hash)
+        settings_hash = self._get_settings_hash()
+        cache_key = f"{file_hash}-{settings_hash}"
+        _fp = {k: self._settings.model_dump()[k] for k in _CACHE_KEY_SETTINGS if k in self._settings.model_dump()}
+        logger.info("FINGERPRINT id=%s %s", id(self), json.dumps(_fp, sort_keys=True, default=str))
+        self._update_lru(cache_key)
 
-        cache_folder = (self._cache_root / "parsed" / file_hash).resolve()
+        cache_folder = (self._cache_root / "parsed" / cache_key).resolve()
         output_file = cache_folder / "documents.json"
         
         safe_stem = sanitize_stem(document_path.stem)
         project_src = Path(__file__).resolve().parent.parent
-        # DO NOT .resolve() symlink_path here, as it would follow existing links
-        symlink_path = project_src / safe_stem
+        # Include settings_hash so each settings variant gets its own symlink.
+        # DO NOT .resolve() symlink_path here, as it would follow existing links.
+        symlink_path = project_src / f"{safe_stem}-{settings_hash}"
 
         # --- Phase 1: Full Cache Check ---
         if output_file.exists():
@@ -254,7 +321,7 @@ class DocumentParser:
         missing_indices = []
 
         for i, ph in enumerate(page_hashes):
-            p_path = (self._cache_root / "pages" / ph / "page.json").resolve()
+            p_path = (self._cache_root / "pages" / f"{ph}-{settings_hash}" / "page.json").resolve()
             if p_path.exists():
                 with open(p_path, "r", encoding="utf-8") as f:
                     doc = Document.model_validate(json.load(f))
@@ -306,7 +373,7 @@ class DocumentParser:
             # Cache new pages and reassemble
             for idx, doc in zip(missing_indices, new_docs):
                 ph = page_hashes[idx]
-                p_dir = (self._cache_root / "pages" / ph).resolve()
+                p_dir = (self._cache_root / "pages" / f"{ph}-{settings_hash}").resolve()
                 p_dir.mkdir(parents=True, exist_ok=True)
                 
                 doc.metadata.filename = document_path.name
@@ -349,14 +416,16 @@ class DocumentParser:
         link.symlink_to(target, target_is_directory=True)
 
     def _persist_to_cache(self, folder: Path, docs: List[Document], doc_path: Path, link: Path):
-        """Persist full document results and update symlink."""
+        """Persist full document results and update symlink. Idempotent: no-op if already written."""
         folder.mkdir(parents=True, exist_ok=True)
-        with open(folder / "documents.json", "w", encoding="utf-8") as f:
-            json.dump([d.model_dump(mode="json") for d in docs], f, indent=2, ensure_ascii=False)
-        for d in docs:
-            md_name = f"{doc_path.stem}_{d.metadata.page_index}.md"
-            with open(folder / md_name, "w", encoding="utf-8") as f:
-                f.write(d.markdown)
+        output_file = folder / "documents.json"
+        if not output_file.exists():
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump([d.model_dump(mode="json") for d in docs], f, indent=2, ensure_ascii=False)
+            for d in docs:
+                md_name = f"{doc_path.stem}_{d.metadata.page_index}.md"
+                with open(folder / md_name, "w", encoding="utf-8") as f:
+                    f.write(d.markdown)
         self._ensure_symlink(link, folder)
 
     def parse_batch(self, input_paths: List[str], max_workers: Optional[int] = None) -> List[dict]:
