@@ -280,13 +280,13 @@ class SearchInput(BaseModel):
         max_length=1000,
         description=(
             "Natural-language query for semantic search "
-            "(e.g. 'right to a fair trial', 'Q3 revenue breakdown')."
+            "(e.g. 'balanced mini-batch sampling', 'Q3 revenue breakdown')."
         ),
     )
     category: Optional[str] = Field(
         default=None,
         description=(
-            "Optional document category filter (e.g. 'legal', 'medical', 'finance'). "
+            "Optional document category filter (e.g. 'research', 'medical', 'finance'). "
             "Matches the `category` field set during ingestion."
         ),
     )

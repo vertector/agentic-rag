@@ -58,7 +58,7 @@ async def run_demo():
         app_name=APP_NAME,
         user_id=USER_ID,
         session_id=session_id,
-        state={"ingestor:active_category": "legal"},
+        state={"ingestor:active_category": "research"},
     )
     logger.info("Session: %s", session_id)
 
@@ -91,7 +91,7 @@ async def run_demo():
         print(f"\n═══ STEP 5: Point-in-time search (root={v1_root[:12]}...) ═══")
         session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
         session.state["ingestor:version_root"] = v1_root
-        await invoke(session_id, "Search for 'right to fair trial' using the pinned version root. Top 3 results.")
+        await invoke(session_id, "Find chunks about 'distribution shifts' using the pinned version root. Top 3 results.")
     else:
         print("\n[SKIP] No version history available for point-in-time search.")
 
@@ -123,3 +123,5 @@ async def run_demo():
 
 if __name__ == "__main__":
     asyncio.run(run_demo())
+
+.

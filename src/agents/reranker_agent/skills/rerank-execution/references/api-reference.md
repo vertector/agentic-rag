@@ -9,7 +9,7 @@
 | query | str | required | 1–2000 chars | Natural-language query |
 | retrieval_top_k | int | 50 | 1–200 | Candidates per leg before CE |
 | rerank_top_n | int | 5 | 1–50, ≤ retrieval_top_k | Final returned results |
-| category | str | null | Must match ingestion category | e.g. "legal", "medical" |
+| category | str | null | Must match ingestion category | e.g. "research", "medical" |
 | version_root | str | null | 64-char SHA-256 hex | null = active version |
 | collection_name | str | null | Exact Qdrant collection name | null = default |
 | include_citations_text | bool | false | — | Adds pre-formatted citation strings |
