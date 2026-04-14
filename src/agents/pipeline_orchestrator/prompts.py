@@ -64,7 +64,9 @@ def build_instruction(context: "InvocationContext") -> str:
     """
     Dynamic instruction builder. Returns only runtime augments when relevant:
       - Active file banner
+      - Active corpus/version filters
       - Parser output ready for ingestion
+      - Manifest discovery suggestion
       - Pending purge reminder
       - Pipeline step progress
       - Escalation lockout
@@ -78,10 +80,27 @@ def build_instruction(context: "InvocationContext") -> str:
             "Resolve ambiguous file references ('it', 'that file', 'this document') to this."
         )
 
+    if state.get("orchestrator:active_corpus"):
+        augments.append(
+            f"ACTIVE CORPUS: '{state['orchestrator:active_corpus']}' is the selected logical Knowledge Base. "
+            "Pass this as corpus_id to all retrieval and ingestion calls."
+        )
+
+    if state.get("orchestrator:active_version"):
+        augments.append(
+            f"PINNED VERSION: '{state['orchestrator:active_version']}' is the selected Merkle root for point-in-time retrieval. "
+            "Pass this as version_root to reranker_agent."
+        )
+
     if state.get("orchestrator:parser_output_path"):
         augments.append(
             f"PARSER OUTPUT: '{state['orchestrator:parser_output_path']}' is ready to ingest. "
             "Pass this exact path as file_path to ingestion_agent — not the original PDF path."
+        )
+    elif state.get("orchestrator:active_file") and not state.get("orchestrator:last_intent") == "PARSE":
+        augments.append(
+            "MANIFEST DISCOVERY: The active file has no current parser output in state. "
+            "If the user wants to ingest it, use `ingestion_agent.find_manifest` first to see if it was parsed before."
         )
 
     if state.get("orchestrator:pending_purge"):

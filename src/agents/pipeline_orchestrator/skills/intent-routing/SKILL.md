@@ -22,9 +22,12 @@ Every turn where the user references a file, document, or content query.
 | Intent | Key signals | Delegate to |
 |--------|-------------|-------------|
 | PARSE | file path, attachment, "parse", "extract", "read this file", "what's in" | document_parser_agent |
-| INGEST | "ingest", "store", "index", "add to system", "verify", "integrity", "history", "versions", "delete", "purge" | ingestion_agent |
+| INGEST | "ingest", "store", "index", "add to system" | ingestion_agent |
 | RETRIEVE | question about content, "find", "search", "most relevant", "what does X say about" | reranker_agent |
 | PIPELINE | "parse and ingest", "process and store", "full pipeline", new file + content question in same message | document_parser_agent → ingestion_agent → reranker_agent |
+| CORPUS | "create a corpus", "add to corpus X", "search in corpus Y", "Knowledge Base" | ingestion_agent |
+| AUDIT | "verify", "integrity", "history", "versions", "audit", "check X page 5" | ingestion_agent |
+| RECOVERY | "find the parsed file", "re-sync Redis", "locate manifest" | ingestion_agent |
 | AMBIGUOUS | unclear target, "do something with", no specific action, multiple possible intents | ask + offer options |
 
 ## Steps — Single Intent
@@ -32,20 +35,24 @@ Every turn where the user references a file, document, or content query.
 1. Classify intent from the table above.
 2. Resolve file reference: use explicit path/filename, or fall back to
    `orchestrator:active_file` from state.
-3. Assemble sub-agent delegation parameters (see below).
-4. For write ops (PARSE, INGEST): confirm in one sentence before delegating.
-   For read ops (RETRIEVE): delegate immediately.
-5. After response: translate result to plain English. Update
-   `orchestrator:active_file` and `orchestrator:last_intent` in state.
+3. Resolve context filters:
+   - `corpus_id`: use explicit mention or `orchestrator:active_corpus`.
+   - `version_root`: use explicit Merkle root or `orchestrator:active_version`.
+4. Assemble sub-agent delegation parameters (see below).
+5. For write ops (PARSE, INGEST, CORPUS, RECOVERY): confirm in one sentence before delegating.
+   For read ops (RETRIEVE, AUDIT): delegate immediately.
+6. After response: translate result to plain English. Update
+   `orchestrator:active_file`, `orchestrator:active_corpus`, and `orchestrator:last_intent` in state.
 
 ## Steps — PIPELINE (multi-step)
 
-1. Announce all steps upfront: "I'll parse, ingest, then search — starting now."
+1. Announce all steps upfront: "I'll parse, ingest into {corpus}, then search — starting now."
 2. Set `orchestrator:pipeline_step = 1`.
 3. Delegate PARSE. On success: announce completion + next step. Increment step.
 4. Delegate INGEST with `file_path` from parser output
-   (absolute path `src/{stem}/documents.json`). On success: announce + increment.
-5. Delegate RETRIEVE with the user's original query. Present results.
+   (absolute path `src/{stem}/documents.json`) and `corpus_id`.
+   On success: announce + increment.
+5. Delegate RETRIEVE with the user's original query and `corpus_id`. Present results.
 6. On any step failure: report which step failed, what succeeded, and next action.
    Do not silently continue.
 
@@ -54,25 +61,31 @@ Every turn where the user references a file, document, or content query.
 1. Identify what is known (filename, partial intent).
 2. Respond with one question + 2–4 labelled options:
    "What would you like to do with {file}?
-   a) Parse it   b) Ingest it   c) Search it   d) Check integrity"
+   a) Parse it   b) Ingest it   c) Search it   d) Check integrity/audit"
 3. Wait for user selection. Do not guess.
 
 ## Parameter Assembly
 
 **document_parser_agent:**
 - `file_path`: resolved absolute path or base64+filename
+- `use_doc_unwarping`: True if user mentions tables or high accuracy
 - Set `parser:active_category` in state if user mentioned a category
 
 **ingestion_agent:**
-- Ingest: `file_path = absolute path to src/{stem}/documents.json` (parser output path)
-- Search: `query` (stripped of conversational framing), `category`, `version_root`
+- Ingest: `file_path = absolute path to src/{stem}/documents.json`, `corpus_id`
+- Search: `query` (stripped of conversational framing), `category`, `corpus_id`, `version_root`
 - Purge: `filename` + warn user + wait for confirmation → set `ingestor:purge_confirmed=True`
 - Audit: `filename` + `page_index` (1-indexed)
+- History: `filename`
+- find_manifest: `filename`
+- Sync: `filename`
 
 **reranker_agent:**
 - `query`: extract core query, strip "what does the document say about", "find", etc.
 - `rerank_top_n`: default 5; use 10 if user asks for "more results"
 - `category`: from `orchestrator:active_category` if set
+- `corpus_id`: from `orchestrator:active_corpus` if set
+- `version_root`: from `orchestrator:active_version` if set
 - `include_citations_text`: True when user needs formatted citations
 
 ## Result Formatting

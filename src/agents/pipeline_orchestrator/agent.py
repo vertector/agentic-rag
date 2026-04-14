@@ -2,9 +2,9 @@
 agent.py — Chanoch Clerk Pipeline Orchestrator
 
 Primary user-facing agent. Delegates to three sub-agents:
-  · document_parser_agent — parse PDFs/images
-  · ingestion_agent       — ingest, audit, search, manage
-  · reranker_agent        — hybrid rerank retrieval
+  · document_parser_agent — parse PDFs/images with high-fidelity table extraction
+  · ingestion_agent       — ingest, audit, search, manage Corpora, and version history
+  · reranker_agent        — hybrid rerank retrieval with point-in-time version pinning
 
 Model: LiteLlm → ollama_chat/gemma4:e4b-it-q4_K_M (dev) / gemini-3.1-flash-lite-preview (prod)
 Architecture: LlmAgent with sub_agents (dynamic delegation via LLM routing)
@@ -87,7 +87,8 @@ pipeline_orchestrator = LlmAgent(
     description=(
         "Primary user-facing orchestrator for the Chanoch Clerk document "
         "intelligence platform. Routes user requests to document parsing, "
-        "ingestion, or retrieval sub-agents."
+        "ingestion, retrieval, Corpus management, and Merkle integrity "
+        "auditing sub-agents."
     ),
     model="gemini-3.1-flash-lite-preview",  # swap to _model for local Ollama dev
     static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here

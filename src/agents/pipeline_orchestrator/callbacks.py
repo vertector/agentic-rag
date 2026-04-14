@@ -54,33 +54,52 @@ def before_model_callback(
     project_root = Path(__file__).resolve().parent.parent.parent.parent
     src_dir = project_root / "src"
 
-    # 1. Proactively extract active_file from user message if state is missing it
-    if not state.get("orchestrator:active_file") and llm_request.contents:
+    # 1. Proactively extract active_file, corpus_id, and version_root from user message
+    if llm_request.contents:
         last_msg = llm_request.contents[-1]
         if last_msg.role == "user" and last_msg.parts:
             user_text = " ".join(p.text for p in last_msg.parts if p.text)
-            # Find paths, filenames, or bracketed placeholders
-            matches = re.findall(r'([^\s]+(?:/[^\s]+)*\.\w+)|{([^}]+)}', user_text)
-            for m_tuple in matches:
-                m = m_tuple[0] or m_tuple[1]
-                m_clean = m.strip('`"\' ')
-                
-                # Try to find a matching dir in src/ for the stem
-                stem = Path(m_clean).stem.lower()
-                # Also handle placeholders like {SAMPLE_PDF} -> try 'sample'
-                clean_stem = stem.replace('_pdf', '').replace('_png', '').replace('_jpg', '').strip('{}')
-                
-                found_dir = None
-                if src_dir.is_dir():
-                    for d in src_dir.iterdir():
-                        if d.is_dir() and d.name.lower() in (stem, clean_stem):
-                            found_dir = d
-                            break
-                
-                if found_dir or m_clean.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp')):
-                    state["orchestrator:active_file"] = m_clean
-                    logger.info("[ORCH] Auto-extracted active_file: %s", m_clean)
-                    break
+            
+            # --- Extract active_file ---
+            if not state.get("orchestrator:active_file"):
+                # Find paths, filenames, or bracketed placeholders
+                matches = re.findall(r'([^\s]+(?:/[^\s]+)*\.\w+)|{([^}]+)}', user_text)
+                for m_tuple in matches:
+                    m = m_tuple[0] or m_tuple[1]
+                    m_clean = m.strip('`"\' ')
+                    
+                    # Try to find a matching dir in src/ for the stem
+                    stem = Path(m_clean).stem.lower()
+                    # Also handle placeholders like {SAMPLE_PDF} -> try 'sample'
+                    clean_stem = stem.replace('_pdf', '').replace('_png', '').replace('_jpg', '').strip('{}')
+                    
+                    found_dir = None
+                    if src_dir.is_dir():
+                        for d in src_dir.iterdir():
+                            if d.is_dir() and d.name.lower() in (stem, clean_stem):
+                                found_dir = d
+                                break
+                    
+                    if found_dir or m_clean.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.webp')):
+                        state["orchestrator:active_file"] = m_clean
+                        logger.info("[ORCH] Auto-extracted active_file: %s", m_clean)
+                        break
+
+            # --- Extract corpus_id ---
+            corpus_matches = re.findall(r"(?:corpus|knowledge base|container)\s+['\"]?([\w-]+)['\"]?", user_text, re.IGNORECASE)
+            if corpus_matches:
+                state["orchestrator:active_corpus"] = corpus_matches[0]
+                logger.info("[ORCH] Auto-extracted active_corpus: %s", corpus_matches[0])
+
+            # --- Extract version_root (64-char hex) ---
+            version_matches = re.findall(r"\b([a-fA-F0-9]{64})\b", user_text)
+            if version_matches:
+                state["orchestrator:active_version"] = version_matches[0]
+                logger.info("[ORCH] Auto-extracted active_version: %s", version_matches[0])
+            elif "current" in user_text.lower() or "latest" in user_text.lower() or "active version" in user_text.lower():
+                # Explicitly clear version pin if user asks for latest
+                state.pop("orchestrator:active_version", None)
+                logger.info("[ORCH] Cleared active_version pin")
 
     # 2. Derive parser_output_path from sub-agent output or disk discovery
     if not state.get("orchestrator:parser_output_path"):
