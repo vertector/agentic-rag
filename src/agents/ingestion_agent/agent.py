@@ -75,7 +75,7 @@ _model = LiteLlm(
 # ─────────────────────────────────────────────────────────────────────────────
 # MCP Toolset — ingestion_pipeline (stdio)
 # ─────────────────────────────────────────────────────────────────────────────
-# timeout=120: ingest_data with large documents.json + cold embedding model.
+# timeout=120: ingest_data with large manifest.json + cold embedding model.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ingestion_mcp = MCPToolset(
@@ -95,6 +95,7 @@ _ingestion_mcp = MCPToolset(
         "ingest_sync",
         "ingest_configure",
         "ingest_status",
+        "find_manifest",
     ],
 )
 
@@ -131,7 +132,7 @@ ingestion_agent = LlmAgent(
         "state recovery, and permanent document purge. Call after parsing, "
         "before reranking."
     ),
-    model="gemini-3.1-flash-lite-preview",  # swap to _model for local Ollama dev
+    model="gemini-3-flash-preview",  # swap to _model for local Ollama dev
     static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here
     instruction=build_instruction,           # dynamic state injection per turn
     output_key="ingestor:agent_output",

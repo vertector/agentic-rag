@@ -2,11 +2,11 @@
 name: ingest-document
 description: >
   Executes document ingestion into the Qdrant Merkle vector store via ingest_data.
-  Use when ingesting parsed documents from a documents.json file path or an inline
-  Document array, when handling large multi-page batches, when applying category
-  tags, or when confirming idempotency behaviour. Activate on phrases like "ingest",
-  "store", "index", "load into qdrant", "upload to vector store", "process documents",
-  or any request supplying a documents.json path or inline Document objects.
+  Use when ingesting parsed documents from a filename (discovery via find_manifest), 
+  a manifest.json file path, or an inline Document array. Activate on phrases 
+  like "ingest", "store", "index", "load into qdrant", "upload to vector store", 
+  "process documents", or any request supplying a filename, manifest.json path 
+  or inline Document objects.
 compatibility: Requires active ingestion_pipeline_mcp server. Qdrant + Redis must be reachable.
 metadata:
   author: Chanoch Clerk Pipeline
@@ -16,7 +16,8 @@ metadata:
 # Ingest Document Skill
 
 ## When to activate
-- Request supplies a `file_path` to a documents.json file.
+- Request supplies a `filename` (e.g. "bbs.pdf") but no manifest path.
+- Request supplies a `file_path` to a manifest.json file.
 - Request supplies an inline `documents` array of Document objects.
 - Request asks to re-ingest (idempotency check needed).
 - Large batch ingest (many pages) where progress logging matters.
@@ -25,9 +26,10 @@ metadata:
 ## Steps
 
 1. **Resolve delivery mode** (mutually exclusive):
+   - `filename` only → call `find_manifest` to resolve to a `file_path`.
    - `file_path` → confirm file exists and has `.json` extension. Never pass a raw PDF.
    - `documents` inline → confirm it is a list, not a single dict. Max 500 documents.
-   - Both provided → return ValidationError before calling.
+   - Both `file_path` and `documents` provided → return ValidationError.
 
 2. **Check connectivity**: if `ingestor:connected` is absent in `session.state`,
    call `ingest_status` first to confirm Qdrant + Redis are reachable. Set
@@ -40,7 +42,7 @@ metadata:
 4. **Call `ingest_data`**.
 
 5. **On success** (`ingested` or `skipped` > 0, no top-level `error` key):
-   - Extract `filename` from the documents.json metadata or from the inline first doc.
+   - Extract `filename` from the manifest.json metadata or from the inline first doc.
    - Persist to `session.state["ingestor:last_ingested_file"]`.
    - Persist full result to `session.state["ingestor:last_ingest_summary"]`.
    - Append `{file, ingested, skipped, errors}` to `ingestor:session_ingest_log`

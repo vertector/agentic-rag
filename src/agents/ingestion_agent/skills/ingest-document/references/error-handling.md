@@ -5,7 +5,7 @@
 ### FileNotFoundError
 **Cause**: `file_path` does not exist.  
 **Recovery**: Confirm document_parser_agent ran successfully and the path matches
-the parser's output folder (e.g. `{stem}/documents.json`). Do not retry until fixed.
+the parser's output folder (e.g. `{stem}/manifest.json`). Do not retry until fixed.
 
 ### ValueError (schema)
 **Cause**: Inline Document data failed Pydantic validation, or JSON in file_path is malformed.  

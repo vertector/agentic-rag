@@ -11,7 +11,7 @@ Architecture notes
 · Configuration is loaded from environment variables with sane defaults; a
   `ingestion_configure` tool allows runtime overrides (restarts the ingestor).
 · Document data can be delivered two ways:
-    1. file_path  — path to a documents.json produced by document_parser_mcp (fastest)
+    1. file_path  — path to a manifest.json produced by document_parser_mcp (fastest)
     2. documents  — inline JSON array (same schema) for direct LLM use
   Both paths normalise to List[Document] before hitting the ingestor.
 
@@ -206,7 +206,7 @@ class IngestInput(BaseModel):
         default=None,
         description=(
             "Path to a manifest.json file produced by document_parser_mcp "
-            "(e.g. 'report/documents.json'). Each entry in the array is ingested "
+            "(e.g. 'report/manifest.json'). Each entry in the array is ingested "
             "as one document page. Mutually exclusive with `documents`."
         ),
     )
@@ -348,17 +348,28 @@ class PurgeInput(BaseModel):
         ),
     )
 
-    @field_validator("filename", mode="after")
-    @classmethod
-    def _extract_basename(cls, v: str) -> str:
-        return _resolve_filename(v)
-
     confirm: bool = Field(
         ...,
         description=(
             "Must be set to `true` to confirm the destructive delete. "
             "This is a safety gate — pass false only to dry-run the call."
         ),
+    )
+
+    @field_validator("filename", mode="after")
+    @classmethod
+    def _extract_basename(cls, v: str) -> str:
+        return _resolve_filename(v)
+
+
+class FindManifestInput(BaseModel):
+    """Input model for find_manifest."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    filename: str = Field(
+        ...,
+        min_length=1,
+        description="Filename to search for in the parsing cache (e.g. 'bbs.pdf').",
     )
 
 
@@ -451,6 +462,8 @@ async def ingest_data(
     ctx: Context,
     file_path: Optional[str] = None,
     documents: Optional[List[dict]] = None,
+    corpus_id: Optional[str] = None,
+    corpus_description: Optional[str] = "",
 ) -> str:
     """
     Ingest one or more document pages into the Qdrant vector store.
@@ -460,12 +473,15 @@ async def ingest_data(
     idempotent if content is unchanged; changed content creates a new versioned
     snapshot (previous snapshot soft-deleted, not removed).
 
-    Supply EITHER file_path (path to documents.json from document_parser_mcp)
+    Supply EITHER file_path (path to manifest.json from document_parser_mcp)
     OR documents (inline array of Document dicts). Not both.
     """
     try:
         params = IngestInput(**{k: v for k, v in {
-            "file_path": file_path, "documents": documents,
+            "file_path": file_path, 
+            "documents": documents,
+            "corpus_id": corpus_id,
+            "corpus_description": corpus_description,
         }.items() if v is not None})
     except Exception as exc:
         return _error("ValidationError", str(exc),
@@ -563,6 +579,90 @@ async def ingest_data(
             f"{len(errors)} page(s) failed. Check the `errors` list for details."
         )
     return json.dumps(result, indent=2)
+
+
+@mcp.tool(
+    name="find_manifest",
+    annotations={
+        "title": "Locate Manifest by Filename",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def find_manifest(
+    ctx: Context,
+    filename: str,
+) -> str:
+    """
+    Locate one or more manifest.json files in the CACHE for a given filename.
+    
+    Use this when you only have a filename and need the absolute path to 
+    ingest it. Returns a list of matching snapshots sorted by modification time.
+    """
+    try:
+        params = FindManifestInput(filename=filename)
+    except Exception as exc:
+        return _error("ValidationError", str(exc))
+
+    project_root = Path(__file__).resolve().parent.parent
+    cache_snapshots = project_root / ".cache" / "snapshots"
+    
+    if not cache_snapshots.exists():
+        return json.dumps({"results": [], "count": 0, "message": "Cache directory not found."})
+
+    matches = []
+    target_filename = params.filename.lower()
+
+    # Iterate snapshots
+    for snapshot_dir in cache_snapshots.iterdir():
+        if not snapshot_dir.is_dir():
+            continue
+            
+        manifest_path = snapshot_dir / "manifest.json"
+        if not manifest_path.exists():
+            continue
+            
+        try:
+            # We only need to check the first document in the manifest to get the filename
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                docs = json.load(f)
+                if not isinstance(docs, list) or not docs:
+                    continue
+                
+                # Check ALL pages in manifest? Usually they all share the same source filename.
+                doc_filename = docs[0].get("metadata", {}).get("filename", "").lower()
+                if doc_filename == target_filename:
+                    st = manifest_path.stat()
+                    matches.append({
+                        "path": str(manifest_path.resolve()),
+                        "mtime": st.st_mtime,
+                        "mtime_human": _format_mtime(st.st_mtime),
+                        "page_count": len(docs),
+                        "snapshot_id": snapshot_dir.name
+                    })
+        except Exception as exc:
+            logger.debug(f"Error reading manifest {manifest_path}: {exc}")
+            continue
+
+    # Sort by mtime descending (latest first)
+    matches.sort(key=lambda x: x["mtime"], reverse=True)
+    
+    # Clean up internal keys for the response
+    for m in matches:
+        m.pop("mtime")
+
+    return json.dumps({
+        "results": matches,
+        "count": len(matches),
+        "query": filename
+    }, indent=2)
+
+
+def _format_mtime(mtime: float) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
 
 
 @mcp.tool(
