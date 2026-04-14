@@ -145,7 +145,7 @@ document_parser_agent = LlmAgent(
         "and parser settings inspection. Output is the canonical input format for "
         "ingestion_agent."
     ),
-    model="gemini-3.1-flash-lite-preview",  # swap to _model for local Ollama dev
+    model="gemini-3-flash-preview",  # swap to _model for local Ollama dev
     static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here
     instruction=build_instruction,           # dynamic state injection per turn
     output_key="parser:agent_output",

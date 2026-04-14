@@ -77,8 +77,8 @@ def resolve_placeholders(text: str) -> str:
     
     resolved = text
     for key, val in MAPPING.items():
-        # Match {KEY} or just KEY (case insensitive, bounded by non-alphanumerics)
-        pattern = re.compile(rf'{{?{re.escape(key)}}}?', re.IGNORECASE)
+        # Strictly match {KEY} (case insensitive)
+        pattern = re.compile(rf'{{(?P<key>{re.escape(key)})}}', re.IGNORECASE)
         resolved = pattern.sub(val, resolved)
     return resolved
 

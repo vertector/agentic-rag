@@ -31,7 +31,7 @@ logger = logging.getLogger("session_runner")
 APP_NAME = "chanoch_clerk"
 USER_ID = "user_001"
 
-SAMPLE_PDF = str(Path(__file__).parent.parent.parent.parent / "data" / "bbs.pdf")
+SAMPLE_PDF = str(Path(__file__).parent.parent.parent.parent / "data" / "sample.pdf")
 
 
 async def invoke(session_id: str, message: str) -> Optional[str]:

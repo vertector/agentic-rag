@@ -177,12 +177,17 @@ class AsyncMerkleQdrantIngestor:
         collection_base_name: str = "secure_rag",
         model_name: Optional[str] = None,
     ):
+        self.qdrant_url = qdrant_url
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.collection_base_name = collection_base_name
+        self.model_name = model_name or "BAAI/bge-small-en-v1.5"
+
         self.qdrant = AsyncQdrantClient(url=qdrant_url, timeout=30.0)
         self.redis = redis_async.Redis(
             host=redis_host, port=redis_port, decode_responses=True
         )
 
-        self.model_name = model_name or "BAAI/bge-small-en-v1.5"
         self._init_encoder()
 
         self.model_id = self.model_name.replace("/", "-").lower()
