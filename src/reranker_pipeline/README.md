@@ -1,6 +1,6 @@
-# Reranker Pipeline Module
+# Chanoch Clerk: Reranker Pipeline Module
 
-The `reranker_pipeline` module is the high-precision retrieval engine for the RAG system. It implements a **two-stage hybrid reranking pipeline** that combines broad semantic recall with deep-learning cross-encoder precision.
+The `reranker_pipeline` module is the high-precision retrieval engine for the Chanoch Clerk RAG system. It implements a **two-stage hybrid reranking pipeline** that combines broad semantic recall with deep-learning cross-encoder precision.
 
 ## Features
 

@@ -1,6 +1,6 @@
-# Ingestion Pipeline Module
+# Chanoch Clerk: Ingestion Pipeline Module
 
-The `ingestion_pipeline` module is the secure, versioned storage engine for the RAG system. It takes parsed `Document` objects from the `document_parser` module and ingests them into a **Qdrant** vector store, anchoring every snapshot with a cryptographic **Merkle root** stored in **Redis**. This design guarantees end-to-end data integrity — any tampering with stored vectors can be detected at any time.
+The `ingestion_pipeline` module is the secure, versioned storage engine for the Chanoch Clerk RAG system. It takes parsed `Document` objects from the `document_parser` module and ingests them into a **Qdrant** vector store, anchoring every snapshot with a cryptographic **Merkle root** stored in **Redis**. This design guarantees end-to-end data integrity — any tampering with stored vectors can be detected at any time.
 
 ## Features
 

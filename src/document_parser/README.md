@@ -1,6 +1,6 @@
-# Document Parser Module
+# Chanoch Clerk: Document Parser Module
 
-The `document_parser` module is the core extraction engine for the RAG system. It is designed to take raw files (like PDFs and images) and convert them into rich, structurally-aware Markdown utilizing **PaddleOCR-VL** and sophisticated layout detection pipelines.
+The `document_parser` module is the core extraction engine for the Chanoch Clerk RAG system. It is designed to take raw files (like PDFs and images) and convert them into rich, structurally-aware Markdown utilizing **PaddleOCR-VL** and sophisticated layout detection pipelines.
 
 ## Features
 
