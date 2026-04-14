@@ -4,10 +4,10 @@ reranker_mcp — FastMCP server wrapping HybridReranker.
 
 Transport:  stdio  (registered in claude_desktop_config.json)
 
-Tool naming follows the project convention established by the other servers:
+Tools:
     parser_*   — document_parser_mcp
-    ingest_*   — ingestion_pipeline_mcp
-    rerank_*   — this server  ← NEW
+    (none)     — ingestion_pipeline_mcp
+    rerank_*   — this server
 
 Architecture:
     Lifespan bootstraps:
@@ -260,7 +260,7 @@ class RerankSearchInput(BaseModel):
         description=(
             "Merkle root hash to pin the search to a specific historical document snapshot. "
             "Omit to query the current active version. "
-            "Obtain valid roots from ingest_history."
+            "Obtain valid roots from history."
         ),
     )
     collection_name: Optional[str] = Field(
@@ -440,7 +440,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
         return _error(
             "IngestorError",
             str(exc),
-            "Check that Qdrant is reachable and the collection has been seeded via ingest_data.",
+            "Check that Qdrant is reachable and the collection has been seeded via ingest.",
         )
     except Exception as exc:
         logger.error(f"rerank_search unexpected error: {type(exc).__name__}: {exc}")
@@ -481,7 +481,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
         response["warning"] = (
             "No results returned. The collection may be empty, or no chunks match "
             "the query / category / version_root combination. "
-            "Run ingest_data first, then retry."
+            "Run ingest first, then retry."
         )
 
     logger.info("Done.")
