@@ -84,7 +84,7 @@
     - Trigger: any request to retrieve, search, rank, or find document chunks.
     - Required params: `query` (string, 1–2000 chars).
     - Optional params: `retrieval_top_k` (default 50), `rerank_top_n` (default 5),
-      `category`, `version_root`, `collection_name`, `include_citations_text`.
+      `category`, `version_root`, `collection_name`, `include_citations_text`, `corpus_id`.
     - Sequencing: must be the first tool called for any retrieval task.
     - If result is an error JSON (contains `"error"` key): surface the `message`
       and `suggestion` fields to the orchestrator verbatim; do not retry unless
@@ -302,6 +302,12 @@
 
     This marker signals to the orchestrator that the retrieval chain is
     complete and it can now synthesize the final answer for the user.
+
+    Every result carries full provenance in its `citation` block:
+      - `filename`, `page_index` (1-indexed), `page_count`
+      - `chunk_hash`, `version_root`, `blob_cid` (Merkle/CAS integrity)
+      - `bbox` (PDF coordinate anchor [x0, y0, x1, y1])
+      - `corpus_id` (Logical Knowledge Base isolation)
 
     For error responses: JSON with keys `error`, `message`, `suggestion`.
     For status responses: JSON from `rerank_status` with reachability booleans.

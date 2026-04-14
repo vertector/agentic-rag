@@ -88,11 +88,12 @@ class CitationEnvelope:
     Fields are chosen to support every common citation rendering pattern:
       · Inline text citation  → filename + page_index
       · PDF deep-link         → filename + page_index + bbox
-      · Audit / integrity     → version_root + chunk_hash
+      · Audit / integrity     → version_root + chunk_hash + blob_cid
       · Sequential context    → chunk_index (position in original document)
+      · Multitenancy          → corpus_id (Logical Knowledge Base container)
     """
     filename: str
-    page_index: int
+    page_index: int         # 1-indexed
     page_count: int
     chunk_index: int
     chunk_hash: str
@@ -100,6 +101,8 @@ class CitationEnvelope:
     category: str
     bbox: List[int]         # [x0, y0, x1, y1] in PDF coordinate space
     timestamp: str          # ingestion timestamp of this snapshot
+    blob_cid: str           # SHA-256 hash of the original source document
+    corpus_id: Optional[str] = None # Knowledge Base container ID
 
 
 @dataclass
@@ -545,6 +548,13 @@ class HybridReranker:
             p = cand.payload
             meta = p.get("metadata", {})
 
+            # Standardise bbox extraction: prefer grounding.bbox, fallback to root or helper
+            bbox = p.get("grounding", {}).get("bbox", [])
+            if not bbox:
+                bbox = p.get("bbox", [])
+            if not bbox:
+                bbox = _extract_bbox(p)
+
             citation = CitationEnvelope(
                 filename=meta.get("filename", "unknown"),
                 page_index=meta.get("page_index", 0),
@@ -553,10 +563,10 @@ class HybridReranker:
                 chunk_hash=p.get("chunk_hash", ""),
                 version_root=p.get("version_root", ""),
                 category=meta.get("category", "general"),
-                bbox=p.get("grounding", {}).get("bbox", [])
-                     if "grounding" in p
-                     else _extract_bbox(p),
+                bbox=bbox,
                 timestamp=p.get("timestamp", ""),
+                blob_cid=meta.get("blob_cid", ""),
+                corpus_id=meta.get("corpus_id"),
             )
 
             results.append(

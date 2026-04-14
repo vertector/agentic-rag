@@ -6,7 +6,7 @@ The `reranker_pipeline` module is the high-precision retrieval engine for the Ch
 
 - **Hybrid Retrieval (RRF)**: Combines dense vector search (from `ingestion_pipeline`) with sparse keyword search (BM25) using Reciprocal Rank Fusion. This rewards documents that show both semantic relevance and exact term matches.
 - **Cross-Encoder Reranking**: Re-scores the top candidates using a full-attention Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`). This provides significantly higher precision than single-vector cosine similarity.
-- **Citation-Aware Output**: Every result is packaged with a `CitationEnvelope` containing everything needed for verifiable citations: filename, page index, bounding boxes (`bbox`), and Merkle integrity roots.
+- **Citation-Aware Output**: Every result is packaged with a `CitationEnvelope` containing everything needed for verifiable citations: filename, page index (1-indexed), bounding boxes (`bbox`), Merkle integrity roots, source `blob_cid`, and `corpus_id`.
 - **Intelligent Score Caching**: Uses an in-process LRU cache to avoid re-scoring the same (query, chunk) pairs across different requests, dramatically reducing latency for frequent queries.
 - **Tunable Blend (Alpha)**: Dynamically adjust the balance between the Cross-Encoder score and the RRF consensus score.
 

@@ -21,11 +21,12 @@ metadata:
 - Request requires `retrieval_top_k` > 100 (high-recall mode).
 - Request combines category filter + version pin + custom top-n (complex parameterisation).
 - Default `rerank_search` call returned 0 results and retry with adjusted params is warranted.
+- Request specifies a `corpus_id` to limit search to a specific knowledge base.
 
 ## Steps
 
 1. **Parse request fields**: extract `query`, `retrieval_top_k`, `rerank_top_n`,
-   `category`, `version_root`, `collection_name`, `include_citations_text`.
+   `category`, `version_root`, `collection_name`, `include_citations_text`, `corpus_id`.
 
 2. **Apply state defaults**: read `reranker:active_category` and
    `reranker:version_root` from `session.state`; use as defaults for any
@@ -76,6 +77,7 @@ metadata:
   only effective within the same running MCP server process.
 - Read `references/error-handling.md` if the tool returns `"error": "IngestorError"`.
 - Read `references/api-reference.md` for the full `rerank_search` response schema.
+- Citations now include `blob_cid` and `corpus_id` for enhanced provenance.
 
 ## Constraints
 

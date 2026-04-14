@@ -198,6 +198,8 @@ def _serialise_result(result: RankedResult) -> dict:
             "category":     result.citation.category,
             "bbox":         result.citation.bbox,
             "timestamp":    result.citation.timestamp,
+            "blob_cid":     result.citation.blob_cid,
+            "corpus_id":    result.citation.corpus_id,
         },
     }
 

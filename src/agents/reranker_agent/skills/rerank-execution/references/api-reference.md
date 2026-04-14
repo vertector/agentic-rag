@@ -10,6 +10,7 @@
 | retrieval_top_k | int | 50 | 1–200 | Candidates per leg before CE |
 | rerank_top_n | int | 5 | 1–50, ≤ retrieval_top_k | Final returned results |
 | category | str | null | Must match ingestion category | e.g. "research", "medical" |
+| corpus_id | str | null | Knowledge Base container ID | Scopes search to this corpus |
 | version_root | str | null | 64-char SHA-256 hex | null = active version |
 | collection_name | str | null | Exact Qdrant collection name | null = default |
 | include_citations_text | bool | false | — | Adds pre-formatted citation strings |
@@ -29,14 +30,16 @@
       "retrieval_sources": ["vector", "sparse"],
       "citation": {
         "filename": "string",
-        "page_index": 0,
+        "page_index": 1,
         "page_count": 0,
         "chunk_index": 0,
         "chunk_hash": "sha256hex",
         "version_root": "sha256hex",
         "category": "string",
         "bbox": [0, 0, 0, 0],
-        "timestamp": "ISO-8601"
+        "timestamp": "ISO-8601",
+        "blob_cid": "sha256hex",
+        "corpus_id": "string"
       },
       "citation_text": "string (only if include_citations_text=true)"
     }
@@ -47,6 +50,7 @@
     "alpha": 0.7,
     "ce_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "bm25_active": true,
+    "corpus_id": null,
     "version_root": null,
     "category": null
   },

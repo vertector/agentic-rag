@@ -31,7 +31,9 @@ metadata:
    ```
    [{index}] {citation.filename} · p.{citation.page_index} · chunk {citation.chunk_index} · score {final_score:.3f}
          CE={ce_score:.3f}  RRF={rrf_score:.4f}  sources={retrieval_sources}
-         Merkle: {citation.version_root[:12]}...  hash: {citation.chunk_hash[:12]}...  ({citation.timestamp})
+         Merkle: {citation.version_root[:12]}...  hash: {citation.chunk_hash[:12]}...
+         Audit: blob_cid={citation.blob_cid[:12]}...  corpus_id={citation.corpus_id}
+         Time: {citation.timestamp}
    ```
    If `citation.bbox` is non-empty, append:
    ```
@@ -40,6 +42,7 @@ metadata:
 
 3. **For PDF deep-link output**: extract `{filename}`, `{page_index}`, and `{bbox}`
    per result. Format as `{filename}#page={page_index}&rect={x0},{y0},{x1},{y1}`.
+   Note: `page_index` is 1-indexed.
 
 4. **For audit log output**: flatten each result to:
    ```json
@@ -51,6 +54,8 @@ metadata:
      "final_score": 0.000000,
      "version_root": "...",
      "chunk_hash": "...",
+     "blob_cid": "...",
+     "corpus_id": "...",
      "timestamp": "ISO-8601"
    }
    ```
