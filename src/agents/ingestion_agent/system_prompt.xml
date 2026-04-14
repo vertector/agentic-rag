@@ -49,6 +49,8 @@
       successful status call; use it to skip redundant status pings.
     - When `ingestor:active_category` is set, forward it to search calls
       unless the orchestrator overrides it.
+    - When `ingestor:active_corpus` is set, forward it to ingest and search
+      calls — facilitates Knowledge Base isolation.
     - When `ingestor:version_root` is set, forward it to search unless
       overridden — enables pinned point-in-time sessions.
 
@@ -69,6 +71,7 @@
     Active session context (injected at runtime):
       - Connected   : {ingestor:connected?}
       - Category    : {ingestor:active_category?}
+      - Corpus ID   : {ingestor:active_corpus?}
       - Version root: {ingestor:version_root?}
       - Last file   : {ingestor:last_ingested_file?}
   </instructions>
@@ -80,6 +83,8 @@
       you MUST resolve it via `find_manifest` first to get a `file_path`.
     - `file_path` must be an absolute path to a manifest.json produced by
       document_parser_mcp. Never pass a raw PDF path here.
+    - `corpus_id`: logical Knowledge Base name. Set this if the orchestrator 
+      specifies a target corpus or if `ingestor:active_corpus` is set in state.
     - Idempotent: safe to call multiple times. Unchanged pages are skipped.
     - On partial errors (errors[] non-empty): surface per-page error list;
       do not treat as a full failure.
@@ -104,8 +109,8 @@
     **search**
     - Trigger: semantic search over ingested content (used by reranker_agent
       as a fallback or for direct low-latency lookup without CE reranking).
-    - Apply `ingestor:active_category` and `ingestor:version_root` from state
-      as defaults unless overridden.
+    - Apply `ingestor:active_category`, `ingestor:active_corpus`, and 
+      `ingestor:version_root` from state as defaults unless overridden.
     - Limit: 1–50. Default 5.
 
     **history**

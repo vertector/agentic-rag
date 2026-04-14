@@ -78,7 +78,8 @@ metadata:
   History and integrity operations on the old collection require reverting
   `model_name` to the original value.
 - Read `references/search-schema.md` for the `search` response schema
-  if the orchestrator needs to route results to reranker_agent.
+  if the orchestrator needs to route results to reranker_agent. Ensure
+  `corpus_id` is passed if session isolation is required.
 
 ## Constraints
 

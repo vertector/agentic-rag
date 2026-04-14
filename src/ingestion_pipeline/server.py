@@ -300,6 +300,13 @@ class SearchInput(BaseModel):
             "Matches the `category` field set during ingestion."
         ),
     )
+    corpus_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Logical Knowledge Base ID filter. "
+            "Matches the `corpus_id` field set during ingestion."
+        ),
+    )
     version_root: Optional[str] = Field(
         default=None,
         description=(
@@ -732,6 +739,7 @@ async def search(
     ctx: Context,
     query: str,
     category: Optional[str] = None,
+    corpus_id: Optional[str] = None,
     version_root: Optional[str] = None,
     limit: int = 5,
 ) -> str:
@@ -739,12 +747,19 @@ async def search(
     Semantic search over ingested document chunks.
 
     query: natural-language search query.
-    category: optional category filter (must match category set at ingest time).
+    category: optional category filter.
+    corpus_id: optional Logical Knowledge Base ID filter.
     version_root: optional Merkle root hash for point-in-time search. Omit for active version.
     limit: max results to return (1-50, default 5).
     """
     try:
-        params = SearchInput(query=query, category=category, version_root=version_root, limit=limit)
+        params = SearchInput(
+            query=query, 
+            category=category, 
+            corpus_id=corpus_id,
+            version_root=version_root, 
+            limit=limit
+        )
     except Exception as exc:
         return _error("ValidationError", str(exc), "Check query and limit.")
 
@@ -755,6 +770,7 @@ async def search(
         hits = await ingestor.secure_search(
             query=params.query,
             category=params.category,
+            corpus_id=params.corpus_id,
             version_root=params.version_root,
             limit=params.limit,
         )

@@ -96,6 +96,15 @@ def build_instruction(context: "InvocationContext") -> str:
             "Forward it automatically to every search call unless overridden."
         )
 
+    # ── Pinned corpus
+    if state.get("ingestor:active_corpus"):
+        corpus = state["ingestor:active_corpus"]
+        augments.append(
+            f"PINNED CORPUS: corpus_id='{corpus}' is active for this session. "
+            "Forward it to search and ingest calls unless the orchestrator "
+            "explicitly specifies a different name."
+        )
+
     # ── Escalation lockout
     if state.get("ingestor:escalation_pending"):
         augments.append(

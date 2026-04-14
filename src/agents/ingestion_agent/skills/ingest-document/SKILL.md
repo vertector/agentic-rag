@@ -22,6 +22,7 @@ metadata:
 - Request asks to re-ingest (idempotency check needed).
 - Large batch ingest (many pages) where progress logging matters.
 - Category tagging required alongside ingestion.
+- Knowledge Base (Corpus) selection required.
 
 ## Steps
 
@@ -37,6 +38,7 @@ metadata:
 
 3. **Build params dict**:
    - `file_path` (resolved to absolute path) OR `documents`.
+   - `corpus_id` and `category` if provided/pinned in state.
    - Do not add extra fields — `IngestInput` has `extra="forbid"`.
 
 4. **Call `ingest`**.
