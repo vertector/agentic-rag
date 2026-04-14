@@ -10,6 +10,7 @@ import hashlib
 import json
 import uuid
 from typing import Any, Dict, List, Literal, Optional
+from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -155,7 +156,10 @@ class Metadata(_Base):
         default=None,
         description="Content Identifier (SHA-256 hash) of the original source document.",
     )
-
+    corpus_id: Optional[str] = Field(
+        default=None,
+        description="Logical Knowledge Base container this document belongs to.",
+    )
 
 # ---------------------------------------------------------------------------
 # Document
@@ -508,4 +512,57 @@ class PipelineSettings(_Base):
     def to_pipeline_kwargs(self) -> dict:
         """Backwards compatibility alias for to_init_kwargs()."""
         return self.to_init_kwargs()
+
+
+# ---------------------------------------------------------------------------
+# Corpus Management
+# ---------------------------------------------------------------------------
+
+class CorpusSnapshot(_Base):
+    """
+    Pointer to a parsed Document Snapshot within a Corpus.
+    """
+    doc_cid: str = Field(description="The source blob CID")
+    settings_hash: Optional[str] = Field(default=None, description="Hash of the parser settings used")
+    merkle_root: str = Field(description="The document's Merkle root from the snapshot")
+    
+    @property
+    def snapshot_id(self) -> str:
+        s_hash = self.settings_hash or "default"
+        return f"{self.doc_cid}-{s_hash}"
+
+class Corpus(_Base):
+    """
+    A Knowledge Base container analogous to a Git Repository.
+    Groups multiple documents, isolated by a single set of configuration settings.
+    """
+    corpus_id: str = Field(description="Unique string identifier for the corpus")
+    description: str = Field(default="", description="Human-readable description")
+    settings: PipelineSettings = Field(
+        default_factory=PipelineSettings,
+        description="The unified parsing configuration for all documents in this corpus"
+    )
+    documents: Dict[str, CorpusSnapshot] = Field(
+        default_factory=dict,
+        description="Mapping of filename (e.g., 'bbs.pdf') to its snapshot pointer"
+    )
+    corpus_merkle_root: str = Field(
+        default="",
+        description="The combined Merkle root of all documents in the corpus"
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Last modification timestamp"
+    )
+
+    def compute_corpus_merkle_root(self) -> str:
+        """
+        Computes the aggregate Merkle root across all documents in deterministic order.
+        """
+        if not self.documents:
+            return hashlib.sha256(b"empty_corpus").hexdigest()
         
+        # Sort by filename to guarantee deterministic DAG ordering
+        sorted_docs = sorted(self.documents.items(), key=lambda x: x[0])
+        doc_roots = [snap.merkle_root for _, snap in sorted_docs]
+        return build_merkle_tree(doc_roots)

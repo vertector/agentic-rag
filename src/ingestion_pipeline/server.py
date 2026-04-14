@@ -43,6 +43,7 @@ from ingestion_pipeline.ingestion_pipeline import AsyncMerkleQdrantIngestor, Ing
 from shared.schemas import Document, Metadata, Chunk, Grounding, PipelineSettings  # noqa: F401
 from shared.env_loader import load_env
 from shared.blob_store import get_blob_store
+from shared.corpus_manager import CorpusManager
 
 # Load environment variables (api keys, connection URLs) if present
 load_env()
@@ -130,7 +131,7 @@ def _get_ingestor(ctx: Context) -> AsyncMerkleQdrantIngestor:
 
 def _load_documents_from_file(file_path: str) -> List[Document]:
     """
-    Read a documents.json file (output of document_parser_mcp) and
+    Read a manifest.json file (output of document_parser_mcp) and
     deserialise each entry as a Document.
 
     Raises:
@@ -140,7 +141,7 @@ def _load_documents_from_file(file_path: str) -> List[Document]:
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(
-            f"documents.json not found at '{file_path}'. "
+            f"manifest.json not found at '{file_path}'. "
             "Run document_parser_parse first and pass the output path here."
         )
     try:
@@ -175,7 +176,7 @@ def _error(kind: str, message: str, suggestion: str = "") -> str:
 
 def _resolve_filename(v: str) -> str:
     """
-    If the provided string is a path to a .json file (e.g. documents.json), 
+    If the provided string is a path to a .json file (e.g. manifest.json), 
     attempt to extract its internal metadata.filename. Always returns the 
     base filename (e.g. 'doc.pdf').
     """
@@ -204,7 +205,7 @@ class IngestInput(BaseModel):
     file_path: Optional[str] = Field(
         default=None,
         description=(
-            "Path to a documents.json file produced by document_parser_mcp "
+            "Path to a manifest.json file produced by document_parser_mcp "
             "(e.g. 'report/documents.json'). Each entry in the array is ingested "
             "as one document page. Mutually exclusive with `documents`."
         ),
@@ -213,11 +214,19 @@ class IngestInput(BaseModel):
         default=None,
         max_length=MAX_INLINE_DOCS,
         description=(
-            "Inline array of Document objects (same schema as documents.json). "
+            "Inline array of Document objects (same schema as manifest.json). "
             "Use when passing data directly without touching disk. "
             f"Maximum {MAX_INLINE_DOCS} documents per call. "
             "Mutually exclusive with `file_path`."
         ),
+    )
+    corpus_id: Optional[str] = Field(
+        default=None,
+        description="Logical Knowledge Base container to register these documents into.",
+    )
+    corpus_description: Optional[str] = Field(
+        default="",
+        description="Optional description if creating a new corpus.",
     )
 
     @model_validator(mode="before")
@@ -478,6 +487,12 @@ async def ingest_data(
             "Ensure the parser has run successfully and the output path is correct.",
         )
 
+    corpus_manager = None
+    if hasattr(params, "corpus_id") and params.corpus_id:
+        corpus_manager = CorpusManager()
+        corpus_manager.create_corpus(params.corpus_id, getattr(params, "corpus_description", ""))
+
+
     total = len(documents)
     logger.info(f"Loaded {total} page(s). Starting ingestion...")
 
@@ -496,12 +511,27 @@ async def ingest_data(
             )
             continue
 
+        if hasattr(params, "corpus_id") and params.corpus_id:
+            doc.metadata.corpus_id = params.corpus_id
+            
         try:
             # process_document is idempotent — returns True if actually written, False if skipped
             if await ingestor.process_document(doc):
                 ingested += 1
             else:
                 skipped += 1
+                
+            if hasattr(params, "corpus_id") and params.corpus_id:
+                # Merkle root for the document is derived during parsing or can be re-computed here
+                doc_root = doc.get_merkle_root()
+                corpus_manager.add_snapshot_to_corpus(
+                    params.corpus_id, 
+                    doc.metadata.filename,
+                    doc.metadata.blob_cid or "unknown",
+                    "unknown", # Settings hash not dynamically passed in this schema yet
+                    doc_root
+                )
+
         except IngestorError as exc:
             errors.append({
                 "page_index": doc.metadata.page_index,

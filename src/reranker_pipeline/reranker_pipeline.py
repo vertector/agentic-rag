@@ -237,6 +237,7 @@ class HybridReranker:
         retrieval_top_k: int = 50,
         rerank_top_n: int = 5,
         category: Optional[str] = None,
+        corpus_id: Optional[str] = None,
         version_root: Optional[str] = None,
         collection_name: Optional[str] = None,
     ) -> List[RankedResult]:
@@ -261,9 +262,9 @@ class HybridReranker:
         if not query.strip():
             return []
 
-        # Stage 1a: Vector retrieval (via ingestor — handles all Merkle filters)
+        # Stage 1a: Vector retrieval (via ingestor — handles all Merkle filters and Corpus isolation)
         vector_candidates = await self._vector_leg(
-            query, retrieval_top_k, category, version_root, collection_name
+            query, retrieval_top_k, category, corpus_id, version_root, collection_name
         )
 
         if not vector_candidates:
@@ -299,6 +300,7 @@ class HybridReranker:
         query: str,
         top_k: int,
         category: Optional[str],
+        corpus_id: Optional[str],
         version_root: Optional[str],
         collection_name: Optional[str],
     ) -> List[_Candidate]:
@@ -312,6 +314,7 @@ class HybridReranker:
             points = await self.ingestor.secure_search(
                 query=query,
                 category=category,
+                corpus_id=corpus_id,
                 version_root=version_root,
                 limit=top_k,
                 collection_name=collection_name,

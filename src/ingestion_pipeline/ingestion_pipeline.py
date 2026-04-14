@@ -160,6 +160,7 @@ class AsyncMerkleQdrantIngestor:
         "metadata.filename",
         "metadata.category",
         "metadata.blob_cid",
+        "metadata.corpus_id",
         "filename",          # top-level on root-anchor points
     ]
     _INDEXED_BOOL_FIELDS = [
@@ -501,7 +502,7 @@ class AsyncMerkleQdrantIngestor:
         points: List[models.PointStruct] = []
 
         for idx, (chunk, vector) in enumerate(zip(doc.chunks, embeddings)):
-            chunk_hash = chunk.get_content_hash()
+            chunk_hash = chunk.get_content_hash(doc.metadata.blob_cid)
             # Deterministic point ID — same chunk+version always upserts same UUID
             point_id = str(
                 uuid.uuid5(
@@ -704,15 +705,17 @@ class AsyncMerkleQdrantIngestor:
         self,
         query: str,
         category: Optional[str] = None,
+        corpus_id: Optional[str] = None,
         version_root: Optional[str] = None,
         limit: int = 5,
         collection_name: Optional[str] = None,
     ):
         """
-        Semantic RAG search with point-in-time version pinning.
+        Semantic RAG search with point-in-time version pinning and Corpus isolation.
 
         Omit `version_root` to query the current active version.
         Pass a specific `version_root` to query any historical snapshot.
+        Pass `corpus_id` to strictly limit the search space to a specific Knowledge Base.
         """
         try:
             query_vector = await asyncio.to_thread(self._embed, [query])
@@ -724,6 +727,20 @@ class AsyncMerkleQdrantIngestor:
                 key="is_merkle_leaf", match=models.MatchValue(value=True)
             )
         ]
+
+        if category:
+            must_filters.append(
+                models.FieldCondition(
+                    key="metadata.category", match=models.MatchValue(value=category)
+                )
+            )
+
+        if corpus_id:
+            must_filters.append(
+                models.FieldCondition(
+                    key="metadata.corpus_id", match=models.MatchValue(value=corpus_id)
+                )
+            )
 
         if version_root:
             must_filters.append(

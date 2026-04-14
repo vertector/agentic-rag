@@ -248,6 +248,13 @@ class RerankSearchInput(BaseModel):
             "(e.g. 'research', 'medical', 'finance'). Omit to search all categories."
         ),
     )
+    corpus_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Logical Knowledge Base ID to strictly limit the search space. "
+            "When set, retrieval is scoped entirely to documents within this Corpus."
+        ),
+    )
     version_root: Optional[str] = Field(
         default=None,
         description=(
@@ -425,6 +432,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
             retrieval_top_k=params.retrieval_top_k,
             rerank_top_n=params.rerank_top_n,
             category=params.category,
+            corpus_id=params.corpus_id,
             version_root=params.version_root,
             collection_name=params.collection_name,
         )
@@ -463,6 +471,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
             "alpha":           reranker.alpha,
             "ce_model":        stats["ce_model"],
             "bm25_active":     stats["bm25_available"],
+            "corpus_id":       params.corpus_id,
             "version_root":    params.version_root,
             "category":        params.category,
         },
