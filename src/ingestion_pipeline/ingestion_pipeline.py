@@ -159,6 +159,7 @@ class AsyncMerkleQdrantIngestor:
         "version_root",
         "metadata.filename",
         "metadata.category",
+        "metadata.blob_cid",
         "filename",          # top-level on root-anchor points
     ]
     _INDEXED_BOOL_FIELDS = [

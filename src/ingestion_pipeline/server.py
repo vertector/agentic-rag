@@ -42,6 +42,7 @@ if _project_root not in sys.path:
 from ingestion_pipeline.ingestion_pipeline import AsyncMerkleQdrantIngestor, IngestorError
 from shared.schemas import Document, Metadata, Chunk, Grounding, PipelineSettings  # noqa: F401
 from shared.env_loader import load_env
+from shared.blob_store import get_blob_store
 
 # Load environment variables (api keys, connection URLs) if present
 load_env()
@@ -410,6 +411,19 @@ class ConfigureInput(BaseModel):
     )
 
 
+class GetBlobInput(BaseModel):
+    """Input model for ingest_get_blob."""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    cid: str = Field(
+        ...,
+        min_length=64,
+        max_length=64,
+        description="SHA-256 Content Identifier (CID) of the blob to retrieve.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -424,7 +438,11 @@ class ConfigureInput(BaseModel):
         "openWorldHint": False,
     },
 )
-async def ingest_data(params: IngestInput, ctx: Context) -> str:
+async def ingest_data(
+    ctx: Context,
+    file_path: Optional[str] = None,
+    documents: Optional[List[dict]] = None,
+) -> str:
     """
     Ingest one or more document pages into the Qdrant vector store.
 
@@ -433,26 +451,17 @@ async def ingest_data(params: IngestInput, ctx: Context) -> str:
     idempotent if content is unchanged; changed content creates a new versioned
     snapshot (previous snapshot soft-deleted, not removed).
 
-    Accepts either:
-      · `file_path`  — path to a documents.json from document_parser_mcp
-      · `documents`  — inline array of Document dicts
-
-    Args:
-        params (IngestInput): Validated input. See field descriptions.
-
-    Returns:
-        str: JSON summary of the ingestion run.
-
-        Success:
-        {
-            "ingested": int,          # pages actually written (new/changed)
-            "skipped": int,           # pages unchanged (idempotent no-op)
-            "errors": [               # per-page errors, if any
-                {"page_index": int, "filename": str, "error": str}
-            ],
-            "collection": str         # target Qdrant collection name
-        }
+    Supply EITHER file_path (path to documents.json from document_parser_mcp)
+    OR documents (inline array of Document dicts). Not both.
     """
+    try:
+        params = IngestInput(**{k: v for k, v in {
+            "file_path": file_path, "documents": documents,
+        }.items() if v is not None})
+    except Exception as exc:
+        return _error("ValidationError", str(exc),
+                      "Provide either file_path or documents (not both).")
+
     ingestor = _get_ingestor(ctx)
     logger.info("Loading document data...")
 
@@ -537,29 +546,22 @@ async def ingest_data(params: IngestInput, ctx: Context) -> str:
     },
 )
 async def ingest_audit(
-    params: VerifyIntegrityInput, ctx: Context
+    ctx: Context,
+    filename: str,
+    page_index: int,
 ) -> str:
     """
     Mathematically verify that the stored Qdrant vectors for a page match
     the trusted Merkle root in Redis.
 
-    Re-derives the Merkle root by scrolling all leaf chunks from Qdrant,
-    sorting by chunk_index, and rebuilding the tree.  Compares the result
-    against the root stored in Redis at ingestion time.
-
-    Args:
-        params (VerifyIntegrityInput): filename + page_index to audit.
-
-    Returns:
-        str: JSON result.
-
-        {
-            "filename": str,
-            "page_index": int,
-            "integrity": "PASSED" | "FAILED",
-            "detail": str          # human-readable explanation
-        }
+    filename: original document filename (e.g. 'report.pdf'). Basename only.
+    page_index: 1-indexed page number to verify.
     """
+    try:
+        params = VerifyIntegrityInput(filename=filename, page_index=page_index)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check filename and page_index.")
+
     ingestor = _get_ingestor(ctx)
     logger.info("Running integrity audit...")
 
@@ -596,38 +598,26 @@ async def ingest_audit(
         "openWorldHint": False,
     },
 )
-async def ingest_search(params: SearchInput, ctx: Context) -> str:
+async def ingest_search(
+    ctx: Context,
+    query: str,
+    category: Optional[str] = None,
+    version_root: Optional[str] = None,
+    limit: int = 5,
+) -> str:
     """
     Semantic search over ingested document chunks.
 
-    Omit `version_root` to query the current active version of all documents.
-    Pass a specific `version_root` (from `ingest_history`) to perform
-    a point-in-time search against any historical snapshot.
-
-    Optionally filter results by document `category`.
-
-    Args:
-        params (SearchInput): query, optional category/version_root/limit.
-
-    Returns:
-        str: JSON array of matching chunks.
-
-        [
-            {
-                "score": float,
-                "content": str,                    # chunk markdown text
-                "metadata": {
-                    "filename": str,
-                    "page_index": int,
-                    "page_count": int,
-                    "category": str
-                },
-                "chunk_hash": str,                 # SHA-256 content fingerprint
-                "version_root": str,               # Merkle root of the snapshot
-                "timestamp": str                   # ISO-8601 ingestion time (UTC)
-            }
-        ]
+    query: natural-language search query.
+    category: optional category filter (must match category set at ingest time).
+    version_root: optional Merkle root hash for point-in-time search. Omit for active version.
+    limit: max results to return (1-50, default 5).
     """
+    try:
+        params = SearchInput(query=query, category=category, version_root=version_root, limit=limit)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check query and limit.")
+
     ingestor = _get_ingestor(ctx)
     logger.info("Embedding query...")
 
@@ -673,29 +663,21 @@ async def ingest_search(params: SearchInput, ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_history(params: HistoryInput, ctx: Context) -> str:
+async def ingest_history(
+    ctx: Context,
+    filename: str,
+) -> str:
     """
     Retrieve the full version history (audit trail) for a document.
 
-    Returns all Merkle root anchors ever stored for the document, sorted
-    newest-first.  Use the `version_root` values with `ingest_search` to
-    query any historical snapshot.
-
-    Args:
-        params (HistoryInput): filename to look up.
-
-    Returns:
-        str: JSON array of version records.
-
-        [
-            {
-                "version_root": str,    # Merkle root hash (use for point-in-time search)
-                "timestamp": str,       # ISO-8601 ingestion time (UTC), newest first
-                "page_index": int,
-                "chunk_count": int
-            }
-        ]
+    filename: document filename to retrieve version history for (e.g. 'report.pdf').
+    Returns all Merkle root anchors ever stored, sorted newest-first.
     """
+    try:
+        params = HistoryInput(filename=filename)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check filename.")
+
     ingestor = _get_ingestor(ctx)
     logger.info("Fetching audit trail...")
 
@@ -734,26 +716,23 @@ async def ingest_history(params: HistoryInput, ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_purge(params: PurgeInput, ctx: Context) -> str:
+async def ingest_purge(
+    ctx: Context,
+    filename: str,
+    confirm: bool,
+) -> str:
     """
     Permanently delete ALL Qdrant vectors and Redis state for a document
-    (every page, every version, every root anchor).
+    (every page, every version, every root anchor). IRREVERSIBLE.
 
-    This operation is IRREVERSIBLE.  The `confirm` field must be set to `true`
-    or the call will be aborted with an informational message.
-
-    Args:
-        params (PurgeInput): filename + confirm=true.
-
-    Returns:
-        str: JSON confirmation or abort message.
-
-        {
-            "purged": bool,
-            "filename": str,
-            "message": str
-        }
+    filename: document filename to purge (e.g. 'report.pdf').
+    confirm: must be true to proceed. Pass false only to dry-run.
     """
+    try:
+        params = PurgeInput(filename=filename, confirm=confirm)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check filename and confirm=true.")
+
     if not params.confirm:
         return json.dumps({
             "purged": False,
@@ -796,27 +775,21 @@ async def ingest_purge(params: PurgeInput, ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_sync(params: ReconcileInput, ctx: Context) -> str:
+async def ingest_sync(
+    ctx: Context,
+    filename: str,
+) -> str:
     """
     Recovery utility: re-seeds Redis active-root keys from Qdrant root anchors.
 
-    Use this when Redis data has been lost (eviction, flush, restart without
-    persistence) and integrity checks are failing.  For each page in the
-    document's Qdrant history, the most recent root anchor (by timestamp) is
-    written back to Redis as the active root.
-
-    Args:
-        params (ReconcileInput): filename to reconcile.
-
-    Returns:
-        str: JSON summary.
-
-        {
-            "filename": str,
-            "pages_reconciled": int,
-            "message": str
-        }
+    Use after Redis data loss to restore integrity check state.
+    filename: document filename to reconcile (e.g. 'report.pdf').
     """
+    try:
+        params = ReconcileInput(filename=filename)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check filename.")
+
     ingestor = _get_ingestor(ctx)
     logger.info(f"Reconciling Redis state for {params.filename}...")
 
@@ -851,21 +824,29 @@ async def ingest_sync(params: ReconcileInput, ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_configure(params: ConfigureInput, ctx: Context) -> str:
+async def ingest_configure(
+    ctx: Context,
+    qdrant_url: Optional[str] = None,
+    redis_host: Optional[str] = None,
+    redis_port: Optional[int] = None,
+    collection_base_name: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> str:
     """
-    Update the Qdrant / Redis connection settings and re-initialise the ingestor.
+    Update Qdrant/Redis connection settings and re-initialise the ingestor.
 
-    Only fields you supply are changed; unspecified fields keep their current
-    values.  The ingestor is torn down and re-created, which verifies new
-    connectivity.  Any in-flight ingestion calls should complete before calling
-    this tool.
-
-    Args:
-        params (ConfigureInput): Fields to update — see field descriptions.
-
-    Returns:
-        str: JSON confirmation with the applied settings.
+    Only fields you supply are changed; unspecified fields keep their current values.
+    Changing model_name targets a different collection.
     """
+    try:
+        params = ConfigureInput(**{k: v for k, v in {
+            "qdrant_url": qdrant_url, "redis_host": redis_host,
+            "redis_port": redis_port, "collection_base_name": collection_base_name,
+            "model_name": model_name,
+        }.items() if v is not None})
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check configuration values.")
+
     global _ingestor
 
     updates = {k: v for k, v in params.model_dump().items() if v is not None}
@@ -987,6 +968,54 @@ async def ingest_status(ctx: Context) -> str:
         "redis_host":        conn_kwargs.get("host", REDIS_HOST),
         "redis_port":        conn_kwargs.get("port", REDIS_PORT),
     }, indent=2)
+
+
+@mcp.tool(
+    name="ingest_get_blob",
+    annotations={
+        "title": "Retrieve Raw Document Blob by CID",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ingest_get_blob(
+    ctx: Context,
+    cid: str,
+) -> str:
+    """
+    Retrieve the original raw document content (PDF/image) using its Content Identifier (CID).
+    Returns the content as a base64-encoded string.
+    """
+    try:
+        params = GetBlobInput(cid=cid)
+    except Exception as exc:
+        return _error("ValidationError", str(exc), "Check CID format (must be 64-char SHA-256).")
+
+    logger.info(f"Retrieving blob {params.cid[:8]}...")
+
+    try:
+        store = get_blob_store()
+        if not store.exists(params.cid):
+            return _error(
+                "NotFoundError",
+                f"Blob with CID {params.cid} was not found in the local CAS.",
+                "Ensure the document has been parsed and the BlobStore is persistent."
+            )
+        
+        data = store.get_bytes(params.cid)
+        import base64
+        encoded = base64.b64encode(data).decode("utf-8")
+        
+        return json.dumps({
+            "cid": params.cid,
+            "base64": encoded,
+            "size_bytes": len(data),
+            "status": "success"
+        }, indent=2)
+    except Exception as exc:
+        return _error(type(exc).__name__, str(exc))
 
 
 # ---------------------------------------------------------------------------

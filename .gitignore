@@ -29,5 +29,7 @@ virology_pg2/
 *.swp
 *.swo
 
+.cache/
+
 # Lock files
 # uv.lock  # Keep if you want to track exact dependencies
