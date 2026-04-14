@@ -607,7 +607,7 @@ def format_citation(result: RankedResult, index: int = 1) -> str:
 
     Example output:
         [1] legal_statute_v1.pdf · p.0 · chunk 1 · score 0.923
-            Merkle: a3f4b1c2... (2025-03-01T12:00:00+00:00)
+            Merkle: a3f4b1c2... (2026-04-14T12:00:00+00:00)
     """
     c = result.citation
     lines = [

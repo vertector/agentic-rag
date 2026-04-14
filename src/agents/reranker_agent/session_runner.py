@@ -107,7 +107,7 @@ async def run_demo():
     # Pre-seeding category and a pinned version_root so the agent picks them up
     # via state injection in build_instruction().
     initial_state = {
-        "reranker:active_category": "legal",
+        "reranker:active_category": "research",
         # version_root: leave None for the first few calls (active version)
     }
 
@@ -120,11 +120,10 @@ async def run_demo():
     logger.info("Session created: %s", session_id)
 
     # ── 2. Standard hybrid rerank
-    print("\n═══ STEP 1: Standard hybrid rerank (category=legal) ═══")
+    print("\n═══ STEP 1: Standard hybrid rerank (category=research) ═══")
     await invoke(
         session_id,
-        "Rerank for query: 'right to a fair trial and due process'. "
-        "Return top 3 results with citation text.",
+        "What is the primary technical problem the authors are trying to solve regarding medical imaging?",
     )
 
     # ── 3. Retrieve Merkle snapshot from session state and pin it
@@ -142,14 +141,10 @@ async def run_demo():
         print(f"\n═══ STEP 2: Point-in-time rerank (pinned root={version_root[:12]}...) ═══")
         # Inject version_root into state (simulates orchestrator setting it)
         session.state["reranker:version_root"] = version_root
-        await session_service.update_session(
-            app_name=APP_NAME, user_id=USER_ID, session_id=session_id,
-            state=session.state,
-        )
+        # Note: InMemorySessionService state is modified in-place; no explicit update needed.
         await invoke(
             session_id,
-            "Rerank for query: 'arbitrary detention and freedom of assembly'. "
-            "Use the pinned version_root from session state. Top 5 results.",
+            "How does the proposed 'balanced batch sampling' technique differ from the 'straightforward approach' mentioned in the introduction?",
         )
     else:
         print("\n[SKIP] No version_root available from step 1 results.")
@@ -165,10 +160,7 @@ async def run_demo():
         app_name=APP_NAME, user_id=USER_ID, session_id=session_id
     )
     session.state["reranker:slow_op_acknowledged"] = True
-    await session_service.update_session(
-        app_name=APP_NAME, user_id=USER_ID, session_id=session_id,
-        state=session.state,
-    )
+    # Note: InMemorySessionService state is modified in-place; no explicit update needed.
     await invoke(
         session_id,
         "Switch the cross-encoder to cross-encoder/ms-marco-MiniLM-L-12-v2 "
@@ -179,8 +171,7 @@ async def run_demo():
     print("\n═══ STEP 5: Rerank with new CE model ═══")
     await invoke(
         session_id,
-        "Rerank for query: 'right to privacy' with top 3 results. "
-        "Include the active CE model name in your response.",
+        "According to the abstract, what were the specific observed benefits of using multi-domain balanced sampling?",
     )
 
     # ── 7. Print final session score history
@@ -216,3 +207,4 @@ async def run_demo():
 
 if __name__ == "__main__":
     asyncio.run(run_demo())
+

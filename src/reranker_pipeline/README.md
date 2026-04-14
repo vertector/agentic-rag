@@ -47,7 +47,7 @@ async def main():
 
     # 3. Search and Rerank
     results = await reranker.rerank(
-        query="What are the legal requirements for due process?",
+        query="What are the findings regarding balanced batching?",
         retrieval_top_k=50,  # Fetch 50 candidates per leg
         rerank_top_n=5       # Return top 5 after reranking
     )

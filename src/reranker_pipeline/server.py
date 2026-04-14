@@ -217,7 +217,7 @@ class RerankSearchInput(BaseModel):
         max_length=2000,
         description=(
             "Natural-language query used to retrieve and rank document chunks. "
-            "Example: 'right to a fair trial and due process'."
+            "Example: 'balanced batching'."
         ),
     )
     retrieval_top_k: int = Field(
@@ -245,7 +245,7 @@ class RerankSearchInput(BaseModel):
         description=(
             "Optional document category filter applied at the Qdrant retrieval stage. "
             "Must match a `category` value set during ingestion "
-            "(e.g. 'legal', 'medical', 'finance'). Omit to search all categories."
+            "(e.g. 'research', 'medical', 'finance'). Omit to search all categories."
         ),
     )
     version_root: Optional[str] = Field(
@@ -489,7 +489,17 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def rerank_configure(params: RerankConfigureInput, ctx: Context) -> str:
+async def rerank_configure(
+    ctx: Context,
+    alpha: Optional[float] = None,
+    cross_encoder_model_name: Optional[str] = None,
+    cache_size: Optional[int] = None,
+    qdrant_url: Optional[str] = None,
+    redis_host: Optional[str] = None,
+    redis_port: Optional[int] = None,
+    embed_model_name: Optional[str] = None,
+    **kwargs: Any,
+) -> str:
     """
     Hot-swap reranker settings at runtime.
 
@@ -506,15 +516,34 @@ async def rerank_configure(params: RerankConfigureInput, ctx: Context) -> str:
     Only fields you supply are changed; unspecified fields retain their
     current values.
 
-    Args:
-        params (RerankConfigureInput): Fields to update — see field descriptions.
-
     Returns:
         str: JSON confirmation with applied settings.
     """
     global _ingestor, _reranker
 
-    updates = {k: v for k, v in params.model_dump().items() if v is not None}
+    updates = {}
+    # 1. Collect named args
+    if alpha is not None: updates["alpha"] = alpha
+    if cross_encoder_model_name is not None: updates["cross_encoder_model_name"] = cross_encoder_model_name
+    if cache_size is not None: updates["cache_size"] = cache_size
+    if qdrant_url is not None: updates["qdrant_url"] = qdrant_url
+    if redis_host is not None: updates["redis_host"] = redis_host
+    if redis_port is not None: updates["redis_port"] = redis_port
+    if embed_model_name is not None: updates["embed_model_name"] = embed_model_name
+
+    # 2. Collect from kwargs (handles potential 'params' nesting or odd model behavior)
+    for k, v in kwargs.items():
+        if v is not None and k not in updates:
+            updates[k] = v
+    
+    # 3. Special case: if 'params' was passed as a dict in kwargs
+    if "params" in kwargs and isinstance(kwargs["params"], dict):
+        for k, v in kwargs["params"].items():
+            if v is not None and k not in updates:
+                updates[k] = v
+
+    logger.info("[TOOL] rerank_configure consolidated updates: %s", updates)
+    
     if not updates:
         rr = _get_reranker(ctx)
         stats = rr.cache_stats()
@@ -531,7 +560,7 @@ async def rerank_configure(params: RerankConfigureInput, ctx: Context) -> str:
 
     # --- Determine whether an ingestor rebuild is needed ---
     ingestor_fields = {"qdrant_url", "redis_host", "redis_port", "embed_model_name"}
-    needs_ingestor_rebuild = bool(ingestor_fields & set(updates))
+    needs_ingestor_rebuild = bool(ingestor_fields & set(updates.keys()))
 
     # Merge updates onto current values
     current_ingestor = _get_ingestor(ctx)
@@ -548,7 +577,6 @@ async def rerank_configure(params: RerankConfigureInput, ctx: Context) -> str:
         "cache_size":        current_stats["ce_cache_size"],
     }
     new_cfg.update({
-        # map param field names to cfg keys
         "alpha":            updates.get("alpha",                   new_cfg["alpha"]),
         "ce_model":         updates.get("cross_encoder_model_name", new_cfg["ce_model"]),
         "cache_size":       updates.get("cache_size",              new_cfg["cache_size"]),
