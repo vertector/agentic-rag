@@ -105,23 +105,19 @@ async def before_tool_callback(
         # Reset the gate for next time
         del state["ingestor:purge_confirmed"]
 
-    # ── Auto-inject category
+    # ── Auto-inject category (flat signature — fields are top-level in args)
     if tool_name in ("ingest_data", "ingest_search", "ingest_history", "ingest_purge"):
         active_cat = state.get("ingestor:active_category")
-        if active_cat:
-            params = args.get("params", {})
-            if isinstance(params, dict) and not params.get("category"):
-                params["category"] = active_cat
-                logger.info("[INGESTOR] Auto-injected category=%s into %s", active_cat, tool_name)
+        if active_cat and not args.get("category"):
+            args["category"] = active_cat
+            logger.info("[INGESTOR] Auto-injected category=%s into %s", active_cat, tool_name)
 
-    # ── Auto-inject version_root for search
+    # ── Auto-inject version_root for search (flat signature)
     if tool_name == "ingest_search":
         v_root = state.get("ingestor:version_root")
-        if v_root:
-            params = args.get("params", {})
-            if isinstance(params, dict) and not params.get("version_root"):
-                params["version_root"] = v_root
-                logger.info("[INGESTOR] Auto-injected version_root=%s... into search", v_root[:8])
+        if v_root and not args.get("version_root"):
+            args["version_root"] = v_root
+            logger.info("[INGESTOR] Auto-injected version_root=%s... into search", v_root[:8])
 
     return None
 
@@ -177,9 +173,8 @@ async def after_tool_callback(
         errors = parsed.get("errors", [])
         collection = parsed.get("collection", "")
 
-        # Best-effort filename extraction from args
-        params = args.get("params", {}) if isinstance(args.get("params"), dict) else {}
-        file_path = params.get("file_path") or args.get("file_path", "")
+        # Best-effort filename extraction from args (flat signature)
+        file_path = args.get("file_path", "")
         stem = Path(file_path).stem if file_path else "inline"
         filename = Path(file_path).name if file_path else "inline"
 

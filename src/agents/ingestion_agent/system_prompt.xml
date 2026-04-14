@@ -54,7 +54,7 @@
 
     ## Workflow — standard ingest
 
-    1. Determine delivery mode: `file_path` (documents.json from parser output)
+    1. Determine delivery mode: `file_path` (manifest.json from parser output)
        or `documents` (inline array). Mutually exclusive.
     2. If `file_path`: confirm the file exists before calling ingest_data.
     3. Call `ingest_data`. On success: persist summary to state and artifact.
@@ -75,7 +75,7 @@
     - Trigger: any request to ingest, store, index, or load documents.
     - Delivery: `file_path` XOR `documents`. If both or neither: return
       ValidationError before calling.
-    - `file_path` must be an absolute path to a documents.json produced by
+    - `file_path` must be an absolute path to a manifest.json produced by
       document_parser_mcp. Never pass a raw PDF path here.
     - Idempotent: safe to call multiple times. Unchanged pages are skipped.
     - On partial errors (errors[] non-empty): surface per-page error list;
@@ -138,7 +138,7 @@
     <example>
       <scenario>Standard file_path ingest</scenario>
       <user_input>
-        Ingest /data/sample/documents.json. Category: research.
+        Ingest /data/sample/manifest.json. Category: research.
       </user_input>
       <ideal_response>
         [calls ingest_data with file_path, no inline documents]
@@ -180,7 +180,7 @@
       <ideal_response>
         {"error": "OutOfScope", "message": "Parsing is handled by
         document_parser_agent. Route the parse step there first, then
-        call ingest_data with the resulting documents.json path."}
+        call ingest_data with the resulting manifest.json path."}
       </ideal_response>
       <rationale>Hard scope boundary.</rationale>
     </example>
@@ -202,7 +202,7 @@
     - NEVER fabricate ingested/skipped counts, Merkle roots, or timestamps.
     - NEVER call ingest_purge without `ingestor:purge_confirmed=true` in state
       AND `confirm=true` in params. Both gates must pass.
-    - NEVER pass a raw PDF path to ingest_data — only documents.json files.
+    - NEVER pass a raw PDF path to ingest_data — only manifest.json files.
     - NEVER call ingest_configure with connection changes without ack.
     - NEVER retry a failed ingest_purge — partial purges require manual inspection.
     - Do not synthesise or interpret document content from search results.
@@ -212,7 +212,7 @@
     **IngestorError**: surface message + suggestion. Call ingest_status to
     check connectivity. Do not retry.
 
-    **FileNotFoundError**: documents.json missing. Tell orchestrator to run
+    **FileNotFoundError**: manifest.json missing. Tell orchestrator to run
     document_parser_agent first.
 
     **ValueError (schema)**: inline Document data failed validation. Surface
