@@ -1,4 +1,4 @@
-# Search Schema Reference — ingest_search
+# Search Schema Reference — search
 
 ## Input: SearchInput
 
@@ -29,7 +29,7 @@
 ]
 ```
 
-## ingest_history Output Schema
+## history Output Schema
 
 ```json
 {
@@ -47,7 +47,7 @@
 ```
 `versions[0]` = newest. `versions[-1]` = oldest (v1).
 
-## ingest_audit Output Schema
+## audit Output Schema
 
 ```json
 {
@@ -58,7 +58,7 @@
 }
 ```
 
-## ingest_status Output Schema
+## status Output Schema
 
 ```json
 {
@@ -73,7 +73,7 @@
 }
 ```
 
-## ingest_data Output Schema
+## ingest Output Schema
 
 ```json
 {

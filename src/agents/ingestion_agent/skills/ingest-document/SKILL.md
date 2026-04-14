@@ -1,7 +1,7 @@
 ---
 name: ingest-document
 description: >
-  Executes document ingestion into the Qdrant Merkle vector store via ingest_data.
+  Executes document ingestion into the Qdrant Merkle vector store via ingest.
   Use when ingesting parsed documents from a filename (discovery via find_manifest), 
   a manifest.json file path, or an inline Document array. Activate on phrases 
   like "ingest", "store", "index", "load into qdrant", "upload to vector store", 
@@ -32,14 +32,14 @@ metadata:
    - Both `file_path` and `documents` provided → return ValidationError.
 
 2. **Check connectivity**: if `ingestor:connected` is absent in `session.state`,
-   call `ingest_status` first to confirm Qdrant + Redis are reachable. Set
+   call `status` first to confirm Qdrant + Redis are reachable. Set
    `ingestor:connected = True` on success.
 
 3. **Build params dict**:
    - `file_path` (resolved to absolute path) OR `documents`.
    - Do not add extra fields — `IngestInput` has `extra="forbid"`.
 
-4. **Call `ingest_data`**.
+4. **Call `ingest`**.
 
 5. **On success** (`ingested` or `skipped` > 0, no top-level `error` key):
    - Extract `filename` from the manifest.json metadata or from the inline first doc.
@@ -53,7 +53,7 @@ metadata:
 
 6. **On partial errors** (`errors[]` non-empty but `ingested > 0`):
    - Surface the error list. Do NOT treat as total failure.
-   - Recommend re-running `ingest_data` for the failed pages after root-cause fix.
+   - Recommend re-running `ingest` for the failed pages after root-cause fix.
 
 7. **On total failure** (top-level `error` key):
    - Surface `message` + `suggestion`.
@@ -72,8 +72,8 @@ metadata:
 - The ingestor embeds chunks in batches of 100 using fastembed or sentence-transformers.
   First call after cold server start incurs model download if not cached.
 - Collection name = `{COLLECTION_BASE}_{model_id}` — changing `model_name` via
-  `ingest_configure` targets a completely different collection.
-- Read `references/error-handling.md` if `ingest_data` returns any `"error"` key.
+  `configure` targets a completely different collection.
+- Read `references/error-handling.md` if `ingest` returns any `"error"` key.
 
 ## Constraints
 

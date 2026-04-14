@@ -9,7 +9,7 @@ Architecture notes
 · A lifespan context manager calls ingestor.setup() once at server startup so every tool
   call gets a ready-to-use, connection-verified ingestor instance.
 · Configuration is loaded from environment variables with sane defaults; a
-  `ingestion_configure` tool allows runtime overrides (restarts the ingestor).
+  `configure` tool allows runtime overrides (restarts the ingestor).
 · Document data can be delivered two ways:
     1. file_path  — path to a manifest.json produced by document_parser_mcp (fastest)
     2. documents  — inline JSON array (same schema) for direct LLM use
@@ -305,7 +305,7 @@ class SearchInput(BaseModel):
         description=(
             "Merkle root hash to pin the search to a specific historical snapshot. "
             "Omit to query the current active version. "
-            "Obtain valid roots from `ingestion_get_history`."
+            "Obtain valid roots from `history`."
         ),
     )
     limit: int = Field(
@@ -449,7 +449,7 @@ class GetBlobInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 @mcp.tool(
-    name="ingest_data",
+    name="ingest",
     annotations={
         "title": "Ingest Document Pages into Qdrant",
         "readOnlyHint": False,
@@ -458,7 +458,7 @@ class GetBlobInput(BaseModel):
         "openWorldHint": False,
     },
 )
-async def ingest_data(
+async def ingest(
     ctx: Context,
     file_path: Optional[str] = None,
     documents: Optional[List[dict]] = None,
@@ -666,7 +666,7 @@ def _format_mtime(mtime: float) -> str:
 
 
 @mcp.tool(
-    name="ingest_audit",
+    name="audit",
     annotations={
         "title": "Verify Merkle Integrity for a Document Page",
         "readOnlyHint": True,
@@ -675,7 +675,7 @@ def _format_mtime(mtime: float) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_audit(
+async def audit(
     ctx: Context,
     filename: str,
     page_index: int,
@@ -719,7 +719,7 @@ async def ingest_audit(
 
 
 @mcp.tool(
-    name="ingest_search",
+    name="search",
     annotations={
         "title": "Semantic RAG Search with Optional Version Pinning",
         "readOnlyHint": True,
@@ -728,7 +728,7 @@ async def ingest_audit(
         "openWorldHint": False,
     },
 )
-async def ingest_search(
+async def search(
     ctx: Context,
     query: str,
     category: Optional[str] = None,
@@ -784,7 +784,7 @@ async def ingest_search(
 
 
 @mcp.tool(
-    name="ingest_history",
+    name="history",
     annotations={
         "title": "Get Document Version Audit Trail",
         "readOnlyHint": True,
@@ -793,7 +793,7 @@ async def ingest_search(
         "openWorldHint": False,
     },
 )
-async def ingest_history(
+async def history(
     ctx: Context,
     filename: str,
 ) -> str:
@@ -837,7 +837,7 @@ async def ingest_history(
 
 
 @mcp.tool(
-    name="ingest_purge",
+    name="purge",
     annotations={
         "title": "Hard-Delete All Data for a Document",
         "readOnlyHint": False,
@@ -846,7 +846,7 @@ async def ingest_history(
         "openWorldHint": False,
     },
 )
-async def ingest_purge(
+async def purge(
     ctx: Context,
     filename: str,
     confirm: bool,
@@ -896,7 +896,7 @@ async def ingest_purge(
 
 
 @mcp.tool(
-    name="ingest_sync",
+    name="sync",
     annotations={
         "title": "Re-seed Redis State from Qdrant",
         "readOnlyHint": False,
@@ -905,7 +905,7 @@ async def ingest_purge(
         "openWorldHint": False,
     },
 )
-async def ingest_sync(
+async def sync(
     ctx: Context,
     filename: str,
 ) -> str:
@@ -945,7 +945,7 @@ async def ingest_sync(
 
 
 @mcp.tool(
-    name="ingest_configure",
+    name="configure",
     annotations={
         "title": "Update Ingestor Connection Settings",
         "readOnlyHint": False,
@@ -954,7 +954,7 @@ async def ingest_sync(
         "openWorldHint": False,
     },
 )
-async def ingest_configure(
+async def configure(
     ctx: Context,
     qdrant_url: Optional[str] = None,
     redis_host: Optional[str] = None,
@@ -1039,7 +1039,7 @@ async def ingest_configure(
 
 
 @mcp.tool(
-    name="ingest_status",
+    name="status",
     annotations={
         "title": "Get Ingestor Status and Active Settings",
         "readOnlyHint": True,
@@ -1048,7 +1048,7 @@ async def ingest_configure(
         "openWorldHint": False,
     },
 )
-async def ingest_status(ctx: Context) -> str:
+async def status(ctx: Context) -> str:
     """
     Return the active ingestor configuration and connectivity state.
 
@@ -1101,7 +1101,7 @@ async def ingest_status(ctx: Context) -> str:
 
 
 @mcp.tool(
-    name="ingest_get_blob",
+    name="get_blob",
     annotations={
         "title": "Retrieve Raw Document Blob by CID",
         "readOnlyHint": True,
@@ -1110,7 +1110,7 @@ async def ingest_status(ctx: Context) -> str:
         "openWorldHint": False,
     },
 )
-async def ingest_get_blob(
+async def get_blob(
     ctx: Context,
     cid: str,
 ) -> str:

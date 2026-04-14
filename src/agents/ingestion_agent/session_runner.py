@@ -3,11 +3,11 @@ session_runner.py — Chanoch Clerk Ingestion Agent Demo Loop
 
 Steps:
   1. Status check (connectivity)
-  2. Ingest documents.json from parser output
+  2. Ingest manifest.json from parser output
   3. Integrity audit on first page
   4. Version history retrieval
   5. Point-in-time search (pinned to v1 root)
-  6. Redis recovery demo (ingest_sync)
+  6. Redis recovery demo (sync)
   7. Purge with gate flow (dry-run only — confirm gate left unset)
 
 Usage:
@@ -34,11 +34,11 @@ logger = logging.getLogger("session_runner")
 APP_NAME = "chanoch_clerk_ingestion"
 USER_ID = "pipeline_orchestrator"
 
-# Update to a real documents.json path before running
-SAMPLE_DOCUMENTS_JSON = str(
-    Path(__file__).parent.parent.parent / "sample" / "documents.json"
+# Update to a real manifest.json path before running
+SAMPLE_MANIFEST_JSON = str(
+    Path(__file__).parent.parent.parent / ".cache" / "snapshots" / "09264004d4be1b9a96a907caed07f954f88a5e7eb942858b4a0772c822c2a337-44136fa355b3678a" / "manifest.json"
 )
-SAMPLE_FILENAME = "sample.pdf"
+SAMPLE_FILENAME = "bbs.pdf"
 
 
 async def invoke(session_id: str, message: str, *, print_response: bool = True) -> Optional[str]:
@@ -62,21 +62,21 @@ async def run_demo():
     )
     logger.info("Session: %s", session_id)
 
-    # ── 1. Status check
-    print("\n═══ STEP 1: Connectivity check ═══")
-    await invoke(session_id, "Check ingestor status — confirm Qdrant and Redis are reachable.")
+    # # ── 1. Status check
+    # print("\n═══ STEP 1: Connectivity check ═══")
+    # await invoke(session_id, "Check ingestor status — confirm Qdrant and Redis are reachable.")
 
-    # ── 2. Ingest
-    print("\n═══ STEP 2: Ingest documents.json ═══")
-    await invoke(session_id, f"Ingest {SAMPLE_DOCUMENTS_JSON}.")
+    # # ── 2. Ingest
+    # print("\n═══ STEP 2: Ingest manifest.json ═══")
+    # await invoke(session_id, f"Ingest {SAMPLE_MANIFEST_JSON}.")
 
     # ── 3. Audit page 1
     print("\n═══ STEP 3: Integrity audit — page 1 ═══")
     await invoke(session_id, f"Verify integrity of {SAMPLE_FILENAME} page 1.")
 
-    # ── 4. Version history
-    print("\n═══ STEP 4: Version history ═══")
-    response = await invoke(session_id, f"Get version history for {SAMPLE_FILENAME}.")
+    # # ── 4. Version history
+    # print("\n═══ STEP 4: Version history ═══")
+    # response = await invoke(session_id, f"Get version history for {SAMPLE_FILENAME}.")
 
     # Extract oldest version_root from session state (persisted by after_tool_callback)
     v1_root = None
@@ -86,22 +86,22 @@ async def run_demo():
     if roots_for_file:
         v1_root = roots_for_file[-1]  # oldest version is last in the list
 
-    # ── 5. Point-in-time search
-    if v1_root:
-        print(f"\n═══ STEP 5: Point-in-time search (root={v1_root[:12]}...) ═══")
-        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
-        session.state["ingestor:version_root"] = v1_root
-        await invoke(session_id, "Find chunks about 'distribution shifts' using the pinned version root. Top 3 results.")
-    else:
-        print("\n[SKIP] No version history available for point-in-time search.")
+    # # ── 5. Point-in-time search
+    # if v1_root:
+    #     print(f"\n═══ STEP 5: Point-in-time search (root={v1_root[:12]}...) ═══")
+    #     session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
+    #     session.state["ingestor:version_root"] = v1_root
+    #     await invoke(session_id, "Find chunks about 'distribution shifts' using the pinned version root. Top 3 results.")
+    # else:
+    #     print("\n[SKIP] No version history available for point-in-time search.")
 
-    # ── 6. Sync demo (non-destructive)
-    print("\n═══ STEP 6: Redis sync (recovery utility) ═══")
-    await invoke(session_id, f"Sync Redis state from Qdrant for {SAMPLE_FILENAME}.")
+    # # ── 6. Sync demo (non-destructive)
+    # print("\n═══ STEP 6: Redis sync (recovery utility) ═══")
+    # await invoke(session_id, f"Sync Redis state from Qdrant for {SAMPLE_FILENAME}.")
 
-    # ── 7. Purge dry-run (gate should block without purge_confirmed)
-    print("\n═══ STEP 7: Purge dry-run (gate should block) ═══")
-    await invoke(session_id, f"Purge all data for {SAMPLE_FILENAME}.")
+    # # ── 7. Purge dry-run (gate should block without purge_confirmed)
+    # print("\n═══ STEP 7: Purge dry-run (gate should block) ═══")
+    # await invoke(session_id, f"Purge all data for {SAMPLE_FILENAME}.")
 
     # ── Session log
     session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=session_id)
@@ -123,5 +123,3 @@ async def run_demo():
 
 if __name__ == "__main__":
     asyncio.run(run_demo())
-
-.

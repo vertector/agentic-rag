@@ -3,8 +3,8 @@ agent.py — Chanoch Clerk Ingestion Agent
 
 Architecture: single LlmAgent.
 
-Tools: 8 MCP tools (ingest_data, ingest_audit, ingest_search, ingest_history,
-ingest_purge, ingest_sync, ingest_configure, ingest_status) + 2 Skills.
+Tools: 9 MCP tools (ingest, audit, search, history, purge, sync, configure, 
+status, get_blob) + 2 Skills.
 
 Model: LiteLlm → ollama_chat/gemma4:e4b-it-q4_K_M.
 
@@ -75,7 +75,7 @@ _model = LiteLlm(
 # ─────────────────────────────────────────────────────────────────────────────
 # MCP Toolset — ingestion_pipeline (stdio)
 # ─────────────────────────────────────────────────────────────────────────────
-# timeout=120: ingest_data with large manifest.json + cold embedding model.
+# timeout=120: ingest with large manifest.json + cold embedding model.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ingestion_mcp = MCPToolset(
@@ -87,14 +87,15 @@ _ingestion_mcp = MCPToolset(
         timeout=120,
     ),
     tool_filter=[
-        "ingest_data",
-        "ingest_audit",
-        "ingest_search",
-        "ingest_history",
-        "ingest_purge",
-        "ingest_sync",
-        "ingest_configure",
-        "ingest_status",
+        "ingest",
+        "audit",
+        "search",
+        "history",
+        "purge",
+        "sync",
+        "configure",
+        "status",
+        "get_blob",
         "find_manifest",
     ],
 )
@@ -165,7 +166,7 @@ artifact_service = InMemoryArtifactService()
 #                       No-op for LiteLlm/Ollama — safe to leave on.
 #
 # EventsCompactionConfig — model-agnostic sliding-window summarisation.
-#                       ingest_audit and ingest_history return large Merkle
+#                       audit and history return large Merkle
 #                       proof trees and version chains. compaction_interval=4
 #                       keeps context lean across multi-document ingest sessions.
 #                       · compaction_interval=4  summarise after every 4 turns

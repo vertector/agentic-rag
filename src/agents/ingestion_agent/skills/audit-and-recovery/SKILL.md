@@ -19,21 +19,21 @@ metadata:
 
 ## When to activate
 - Orchestrator requests Merkle integrity verification for a page.
-- `ingest_audit` returned FAILED and recovery is needed.
+- `audit` returned FAILED and recovery is needed.
 - Redis data was lost (eviction, flush, restart without persistence).
 - Orchestrator needs a list of version_root values for point-in-time search.
 - Orchestrator requests permanent deletion of all data for a document.
 
 ## Steps — Integrity Audit
 
-1. Call `ingest_audit` with `filename` (basename only) and `page_index` (1-indexed).
+1. Call `audit` with `filename` (basename only) and `page_index` (1-indexed).
 2. **PASSED**: return result and note that data is verified.
 3. **FAILED**: proceed to Redis recovery sequence below.
 
 ## Steps — Redis Recovery
 
-1. Call `ingest_sync` with the `filename`.
-2. Call `ingest_audit` again for the same page.
+1. Call `sync` with the `filename`.
+2. Call `audit` again for the same page.
 3. **Now PASSED**: recovery successful. Persist updated root to
    `session.state["ingestor:version_roots"]`.
 4. **Still FAILED**: data integrity compromised. Emit escalation immediately:
@@ -41,7 +41,7 @@ metadata:
 
 ## Steps — Version History
 
-1. Call `ingest_history` with `filename`.
+1. Call `history` with `filename`.
 2. On success: persist `versions[]` array to
    `session.state["ingestor:version_roots"][filename]` (cap 20 filenames).
 3. Return history. If orchestrator needs point-in-time search: extract
@@ -50,15 +50,15 @@ metadata:
 
 ## Steps — Point-in-Time Search
 
-1. Confirm `ingestor:version_root` is set in state OR extract from `ingest_history`.
-2. Call `ingest_search` with `version_root` forwarded.
+1. Confirm `ingestor:version_root` is set in state OR extract from `history`.
+2. Call `search` with `version_root` forwarded.
 3. Return results. Do not modify or summarise chunk content.
 
 ## Steps — Purge
 
 1. **Before calling**: confirm `session.state["ingestor:purge_confirmed"] == True`.
    If not set: return the confirmation gate message and stop.
-2. Call `ingest_purge` with `filename` and `confirm=True`.
+2. Call `purge` with `filename` and `confirm=True`.
 3. On success: clear `ingestor:last_ingested_file` from state if it matches.
    Clear `ingestor:purge_confirmed` from state.
 4. On error: surface message verbatim. Do NOT retry — partial purges require
@@ -66,23 +66,23 @@ metadata:
 
 ## Gotchas
 
-- `page_index` in `ingest_audit` is **1-indexed**.
-- `ingest_sync` is non-destructive: it only re-seeds Redis keys from Qdrant.
+- `page_index` in `audit` is **1-indexed**.
+- `sync` is non-destructive: it only re-seeds Redis keys from Qdrant.
   It will not recover data that was deleted from Qdrant itself.
-- `ingest_history` returns versions newest-first. `history[-1]` is the oldest
+- `history` returns versions newest-first. `history[-1]` is the oldest
   (v1) root. `history[0]` is the current active root.
-- `ingest_purge` deletes BOTH leaf chunk points AND root anchor points from
+- `purge` deletes BOTH leaf chunk points AND root anchor points from
   Qdrant (OR filter covers `metadata.filename` and `filename` fields).
   It also deletes ALL Redis keys matching `state:{model_id}:doc:{encoded_fn}:page:*`.
-- After `ingest_configure` with a new `model_name`, the collection name changes.
+- After `configure` with a new `model_name`, the collection name changes.
   History and integrity operations on the old collection require reverting
   `model_name` to the original value.
-- Read `references/search-schema.md` for the `ingest_search` response schema
+- Read `references/search-schema.md` for the `search` response schema
   if the orchestrator needs to route results to reranker_agent.
 
 ## Constraints
 
-- Never call `ingest_purge` without `session.state["ingestor:purge_confirmed"] == True`.
+- Never call `purge` without `session.state["ingestor:purge_confirmed"] == True`.
 - Never retry a failed purge — escalate instead.
-- Never fabricate version_root values — only use values from `ingest_history` results.
+- Never fabricate version_root values — only use values from `history` results.
 - Out of scope: ingesting new documents, parsing, reranking.

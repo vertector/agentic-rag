@@ -25,11 +25,11 @@ structured per-page Document objects with markdown, layout-detected chunks
 "Versioned Merkle-tree document ingestion sub-agent. Stores parsed Document
 objects into Qdrant with Redis-backed integrity proofs."
 
-**Key inputs (ingest_data):**
-- `file_path`: path to documents.json from parser
+**Key inputs (ingest):**
+- `file_path`: path to manifest.json from parser
 - `documents`: inline array (max 500)
 
-**Key inputs (ingest_search):**
+**Key inputs (search):**
 - `query`: 1–1000 chars
 - `category`, `version_root`, `limit` (1–50)
 
@@ -82,6 +82,6 @@ reranking over ingested Qdrant document collections."
 
 ## Parser output path convention
 
-Parser writes to: `{document_stem}/documents.json`
-Example: parsing `/data/contract_v3.pdf` → output at `contract_v3/documents.json`
-Pass this path as `file_path` to ingestion_agent's `ingest_data`.
+Parser writes to: `{document_stem}/manifest.json`
+Example: parsing `/data/contract_v3.pdf` → output at `contract_v3/manifest.json`
+Pass this path as `file_path` to ingestion_agent's `ingest`.

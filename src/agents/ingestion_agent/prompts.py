@@ -77,7 +77,7 @@ def build_instruction(context: "InvocationContext") -> str:
         path = state["orchestrator:parser_output_path"]
         augments.append(
             f"PARSED DOCUMENT AVAILABLE: The absolute path to the parsed results is '{path}'. "
-            "Use this as the `file_path` for `ingest_data` calls unless the orchestrator "
+            "Use this as the `file_path` for `ingest` calls unless the orchestrator "
             "explicitly specifies a different path."
         )
 
@@ -85,7 +85,7 @@ def build_instruction(context: "InvocationContext") -> str:
     if not state.get("ingestor:connected"):
         augments.append(
             "⚠️  NOT CONNECTED: Qdrant/Redis connectivity has not been verified this session. "
-            "Call `ingest_status` before the first ingest_data call to confirm reachability."
+            "Call `status` before the first ingest call to confirm reachability."
         )
 
     # ── Pinned version root
@@ -93,7 +93,7 @@ def build_instruction(context: "InvocationContext") -> str:
         vr = state["ingestor:version_root"]
         augments.append(
             f"PINNED VERSION: version_root={vr[:20]}... is active for this session. "
-            "Forward it automatically to every ingest_search call unless overridden."
+            "Forward it automatically to every search call unless overridden."
         )
 
     # ── Escalation lockout
@@ -107,7 +107,7 @@ def build_instruction(context: "InvocationContext") -> str:
     if state.get("ingestor:purge_confirmed"):
         augments.append(
             "🗑️  PURGE CONFIRMED: ingestor:purge_confirmed is set. "
-            "The next ingest_purge call will be allowed through. "
+            "The next purge call will be allowed through. "
             "Ensure the correct filename is passed."
         )
 

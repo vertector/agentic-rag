@@ -9,7 +9,7 @@ The `ingestion_pipeline` module is the secure, versioned storage engine for the 
 - **Idempotent Ingestion**: If a page's content is unchanged since the last ingest, the operation is a no-op — no duplicate data is written.
 - **Semantic Search with Version Pinning**: Query against the currently active version of all documents, or pin a search to any specific historical `version_root`.
 - **Dual Embedding Engine Support**: Automatically falls back from `fastembed` to `sentence-transformers` if one is unavailable.
-- **Redis Recovery**: If Redis state is lost (e.g. after a restart without persistence), the `ingest_sync` tool re-seeds Redis from Qdrant's own root-anchor records.
+- **Redis Recovery**: If Redis state is lost (e.g. after a restart without persistence), the `sync` tool re-seeds Redis from Qdrant's own root-anchor records.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Document (from parser)
    Root Anchor Point (zero-vector, structural record)
 ```
 
-Any time you call `ingest_audit`, the system scrolls Qdrant, reconstructs the Merkle tree, and compares it against the Redis anchor — a mismatch means tampered data.
+Any time you call `audit`, the system scrolls Qdrant, reconstructs the Merkle tree, and compares it against the Redis anchor — a mismatch means tampered data.
 
 ## Usage (Python API)
 
@@ -115,61 +115,61 @@ The final Qdrant collection name is derived automatically as `{COLLECTION_BASE_N
 
 Once the server is running, it exposes the following tools to any MCP client:
 
-#### `ingest_data`
-Ingest document pages into the Qdrant vector store. Accepts either a path to a `documents.json` file (the output of `document_parser`) or an inline JSON array of `Document` objects.
+#### `ingest`
+Ingest document pages into the Qdrant vector store. Accepts either a path to a `manifest.json` file (the output of `document_parser`) or an inline JSON array of `Document` objects.
 
 ```json
 { "file_path": "sample/documents.json" }
 ```
 
-#### `ingest_search`
+#### `search`
 Semantic RAG search over ingested document chunks. Returns scored results with metadata and Merkle version context.
 
 ```json
 { "query": "balanced batch sampling", "limit": 5, "category": "research" }
 ```
 
-Pin a search to a specific historical version using `version_root` (obtained from `ingest_history`):
+Pin a search to a specific historical version using `version_root` (obtained from `history`):
 ```json
 { "query": "introduction", "version_root": "a9b3c4d5..." }
 ```
 
-#### `ingest_audit`
+#### `audit`
 Mathematically verifies that stored Qdrant vectors for a page match the trusted Merkle root in Redis. Re-derives the Merkle tree from scratch.
 
 ```json
 { "filename": "report.pdf", "page_index": 0 }
 ```
 
-#### `ingest_history`
+#### `history`
 Retrieves the full version audit trail for a document — all Merkle root anchors ever recorded, sorted newest-first.
 
 ```json
 { "filename": "report.pdf" }
 ```
 
-#### `ingest_purge`
+#### `purge`
 Permanently hard-deletes **all** Qdrant vectors and Redis state for a document (every page, every version). This is **irreversible** and requires an explicit `confirm: true` flag.
 
 ```json
 { "filename": "report.pdf", "confirm": true }
 ```
 
-#### `ingest_sync`
+#### `sync`
 Recovery utility. Re-seeds Redis active-root keys from Qdrant's stored root-anchor records. Use this when Redis data has been lost and integrity checks are failing.
 
 ```json
 { "filename": "report.pdf" }
 ```
 
-#### `ingest_configure`
+#### `configure`
 Dynamically updates the Qdrant/Redis connection settings and re-initialises the ingestor at runtime. All fields are optional — only those supplied are changed.
 
 ```json
 { "model_name": "BAAI/bge-large-en-v1.5" }
 ```
 
-#### `ingest_status`
+#### `status`
 Returns the active ingestor configuration and pings both Qdrant and Redis to confirm reachability.
 
 ```json
@@ -178,7 +178,7 @@ Returns the active ingestor configuration and pings both Qdrant and Redis to con
 
 ## Output Schema
 
-Search results from `ingest_search` return the following shape for each matching chunk:
+Search results from `search` return the following shape for each matching chunk:
 
 ```json
 {
@@ -201,6 +201,6 @@ Search results from `ingest_search` return the following shape for each matching
 The typical pipeline connects the two MCP servers in sequence:
 
 1. **Parse** a document using `document_parser` → `parse_document` → saves `documents.json`
-2. **Ingest** the parsed output using `ingestion_pipeline` → `ingest_data` with `file_path` pointing to the saved JSON
-3. **Search** across ingested content with `ingest_search`
-4. **Audit** at any time with `ingest_audit` to verify data has not been tampered with
+2. **Ingest** the parsed output using `ingestion_pipeline` → `ingest` with `file_path` pointing to the saved JSON
+3. **Search** across ingested content with `search`
+4. **Audit** at any time with `audit` to verify data has not been tampered with

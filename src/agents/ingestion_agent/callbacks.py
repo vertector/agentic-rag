@@ -96,24 +96,24 @@ async def before_tool_callback(
     state = tool_context.state
 
     # ── Security: Purge Gate
-    if tool_name == "ingest_purge":
+    if tool_name == "purge":
         if not state.get("ingestor:purge_confirmed"):
             return {
                 "error": "ConfirmationRequired",
-                "message": "Destructive operation 'ingest_purge' requires explicit confirmation.",
+                "message": "Destructive operation 'purge' requires explicit confirmation.",
             }
         # Reset the gate for next time
         del state["ingestor:purge_confirmed"]
 
     # ── Auto-inject category (flat signature — fields are top-level in args)
-    if tool_name in ("ingest_data", "ingest_search", "ingest_history", "ingest_purge"):
+    if tool_name in ("ingest", "search", "history", "purge"):
         active_cat = state.get("ingestor:active_category")
         if active_cat and not args.get("category"):
             args["category"] = active_cat
             logger.info("[INGESTOR] Auto-injected category=%s into %s", active_cat, tool_name)
 
     # ── Auto-inject version_root for search (flat signature)
-    if tool_name == "ingest_search":
+    if tool_name == "search":
         v_root = state.get("ingestor:version_root")
         if v_root and not args.get("version_root"):
             args["version_root"] = v_root
@@ -162,12 +162,12 @@ async def after_tool_callback(
         logger.warning("[TOOL ERROR] %s → %s: %s", tool_name, parsed.get("error"), parsed.get("message", "")[:120])
         return None
 
-    if tool_name == "ingest_status":
+    if tool_name == "status":
         state["ingestor:connected"] = True
-        logger.info("[TOOL POST] ingest_status qdrant=%s redis=%s collection=%s",
+        logger.info("[TOOL POST] status qdrant=%s redis=%s collection=%s",
                     parsed.get("qdrant", False), parsed.get("redis", False), parsed.get("collection", ""))
 
-    elif tool_name == "ingest_data":
+    elif tool_name == "ingest":
         ingested = parsed.get("ingested", 0)
         skipped = parsed.get("skipped", 0)
         errors = parsed.get("errors", [])
@@ -199,15 +199,15 @@ async def after_tool_callback(
         except Exception as exc:
             logger.warning("[ARTIFACT SAVE FAILED] %s", exc)
 
-        logger.info("[TOOL POST] ingest_data ingested=%d skipped=%d errors=%d collection=%s",
+        logger.info("[TOOL POST] ingest ingested=%d skipped=%d errors=%d collection=%s",
                     ingested, skipped, len(errors), collection)
 
-    elif tool_name == "ingest_purge":
-        logger.info("[TOOL POST] ingest_purge file=%s deleted=%s",
+    elif tool_name == "purge":
+        logger.info("[TOOL POST] purge file=%s deleted=%s",
                     parsed.get("filename", ""), parsed.get("deleted", False))
 
-    elif tool_name == "ingest_sync":
-        logger.info("[TOOL POST] ingest_sync fixed=%d collection=%s",
+    elif tool_name == "sync":
+        logger.info("[TOOL POST] sync fixed=%d collection=%s",
                     parsed.get("fixed", 0), parsed.get("collection", ""))
 
     return None
