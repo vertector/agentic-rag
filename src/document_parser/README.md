@@ -4,12 +4,12 @@ The `document_parser` module is the core extraction engine for the RAG system. I
 
 ## Features
 
-- **Multi-Modal Parsing**: Built around PaddleOCR-VL to extract not just text, but to understand charts, graphs, tables, and complex document layouts.
-- **VLM Backend Support**: Supports plugging in remote or local Vision-Language Model servers for accelerated parsing (`mlx-vlm-server`, `vllm-server`, `sglang-server`, `fastdeploy-server`, or `local`).
-- **Layout Intelligence**: Automatically detects document structure (headers, footers, tables, paragraphs, images, etc).
-- **Dewarping & Orientation**: Auto-corrects skewed/curved documents and properly rotates pages before extraction.
-- **Seal & Stamp Recognition**: Explicitly highlights and extracts organizational seals and stamps.
-- **Batch Processing**: Provides parallelized worker execution for processing directories full of documents at once.
+- **Git-like Content Identity**: Uses Content-Addressed Storage (CAS) and Merkle roots to ensure documents and chunks have immutable, verifiable identities.
+- **3-Tier Optimization Engine**: Implements a high-performance caching strategy that separates semantic identity (Snapshots) from visual inference (OCR Deduplication).
+- **Robust Page Identity**: Normalized binarized hashing ensures identical pages are deduplicated across different files, even with rendering noise.
+- **Context-Aware RAG Chunks**: Chunks are cryptographically pinned to their document CID and page index, preventing vector store divergence when content shifts position.
+- **Atomic Persistence**: Every write operation uses a transactional "Atomic Rename" strategy to avoid data corruption during process crashes.
+- **Concurrency & Locking**: Thread-safe VLM access and cross-process directory locking for safely shared OCR result caches.
 
 ## Usage (Python API)
 
@@ -40,6 +40,21 @@ documents = parser.parse("data/sample.pdf")
 print(documents[0].markdown)
 ```
 
+### Optimization Tiers (The "Git" Lifecycle)
+
+1. **Tier 1: Snapshot Manifest (The "Commit")**: If the exact document content and settings match a previous run, results are returned instantly from a versioned manifest.
+2. **Tier 2: Global OCR Cache (The "Library")**: If individual pages match previously parsed pages visually (even in different files), the VLM inference is skipped and the cached OCR results are re-assembled into the current document's context.
+3. **Tier 3: Live Inference**: New content is processed via VLM and then committed to both the OCR cache and the document snapshot.
+
+## Testing & Verification
+
+A comprehensive test suite is available in the root `/tests` directory:
+
+- **Identity Stability**: `uv run python tests/test_page_identity.py` (Visual vs Binary identity).
+- **Semantic Integrity**: `uv run python tests/test_ordinal_shift.py` (Merkle root behavior on content moves).
+- **Blob Storage**: `uv run python tests/test_blob_store.py` (CAS checks).
+- **Image Support**: `uv run python tests/test_image_parsing.py` (Multi-format validation).
+
 ## Model Context Protocol (MCP) Server
 
 This module also ships with a fully compatible MCP Server (`server.py`) powered by `FastMCP`. This allows external MCP Clients (like Claude Desktop or the MCP Inspector) to test, configure, and parse documents without writing any Python.
@@ -63,6 +78,6 @@ Once the server is running, it exposes the following tools to clients:
 ## Output Schema
 The parser outputs data adhering to the `shared.schemas.Document` model. A typical page extraction yields:
 - `markdown`: The full stitched markdown of the entire page.
-- `chunks`: Block-level extractions including bounding box coordinates (`grounding`), making it perfect for citation-aware RAG pipelines.
-- `metadata`: Contains pagination, file origins, and optionally base64 image captures of the page.
-- `merkle_root`: A deterministic hash fingerprint of the page content.
+- `chunks`: Block-level extractions with stable CIDs (including `doc_cid` and `page_index` context).
+- `metadata`: Contains `blob_cid` (CAS link), pagination, and optional sidecar image captures.
+- `merkle_root`: A verifiable DAG root ensuring content-and-context integrity.
