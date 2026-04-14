@@ -95,20 +95,19 @@ class Chunk(_Base):
         description="Spatial grounding information for this chunk",
     )
 
-    def get_content_hash(self) -> str:
+    def get_content_hash(self, doc_cid: Optional[str] = None) -> str:
         """
         Deterministic SHA-256 leaf hash for Merkle tree construction.
 
-        Intentionally excludes:
-          · chunk_id   — random UUID, not content
-          · score      — detection confidence, not content
-          · page_image_base64 — rendering artifact, not content
+        Includes document context (doc_cid) if provided to ensure that 
+        structural shifts (moving a chunk between documents) trigger re-embedding.
         """
         payload = {
             "m": self.chunk_markdown,
             "t": self.grounding.chunk_type,
             "b": self.grounding.bbox,
             "p": self.grounding.page_index,
+            "doc": doc_cid, # Contextual identity (Flaw 6)
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -151,6 +150,10 @@ class Metadata(_Base):
             "Base64-encoded PNG of the page. Populated by the parser; "
             "excluded from Merkle hashing and not written to Qdrant."
         ),
+    )
+    blob_cid: Optional[str] = Field(
+        default=None,
+        description="Content Identifier (SHA-256 hash) of the original source document.",
     )
 
 
@@ -208,7 +211,10 @@ class Document(_Base):
         """
         if not self.chunks:
             return hashlib.sha256(self.markdown.encode("utf-8")).hexdigest()
-        return build_merkle_tree([c.get_content_hash() for c in self.chunks])
+        
+        # Flaw 2/6: Chunks are now context-aware of their parent document CID
+        doc_cid = self.metadata.blob_cid
+        return build_merkle_tree([c.get_content_hash(doc_cid) for c in self.chunks])
 
 
 # ---------------------------------------------------------------------------

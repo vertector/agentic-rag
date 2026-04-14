@@ -1,7 +1,9 @@
 import os
 import re
+import json
+import tempfile
 from pathlib import Path
-from typing import Set
+from typing import Set, Union
 
 def get_project_root() -> Path:
     """Returns the absolute path to the project root."""
@@ -79,3 +81,36 @@ def resolve_placeholders(text: str) -> str:
         pattern = re.compile(rf'{{?{re.escape(key)}}}?', re.IGNORECASE)
         resolved = pattern.sub(val, resolved)
     return resolved
+
+def atomic_write(file_path: Path, content: Union[str, bytes]) -> None:
+    """
+    Writes content to a temporary file and then atomically replaces the target.
+    Prevents corrupted files on power loss or process crash.
+    """
+    dir_path = file_path.parent
+    dir_path.mkdir(parents=True, exist_ok=True)
+    
+    # Use the same directory as the target to ensure they are on the same filesystem
+    # (required for atomic os.replace)
+    suffix = ".tmp"
+    is_bytes = isinstance(content, bytes)
+    mode = "wb" if is_bytes else "w"
+    encoding = None if is_bytes else "utf-8"
+    
+    with tempfile.NamedTemporaryFile(mode=mode, dir=str(dir_path), encoding=encoding, suffix=suffix, delete=False) as tf:
+        tmp_path = Path(tf.name)
+        try:
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno()) # Force write to physical storage
+            tf.close()
+            os.replace(tmp_path, file_path)
+        except Exception:
+            if tmp_path.exists():
+                os.unlink(tmp_path)
+            raise
+
+def atomic_json_dump(file_path: Path, data: Union[dict, list], indent: int = 2) -> None:
+    """Atomically writes clear JSON to a file."""
+    content = json.dumps(data, indent=indent, ensure_ascii=False)
+    atomic_write(file_path, content)
