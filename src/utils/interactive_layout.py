@@ -173,7 +173,7 @@ def display_layout_interactive(
         for l, c in label_color.items()
     )
 
-    page_info = f"Page {document.metadata.page_index + 1} / {document.metadata.page_count}"
+    page_info = f"Page {document.metadata.page_index} / {document.metadata.page_count}"
     chunk_count = sum(1 for c in document.chunks if c.grounding.score >= min_confidence)
 
     full_html = f"""
@@ -339,7 +339,7 @@ def display_layout_interactive_batch(
             for l, c in label_color.items()
         )
 
-        page_info   = f"Page {document.metadata.page_index + 1} / {document.metadata.page_count}"
+        page_info   = f"Page {document.metadata.page_index} / {document.metadata.page_count}"
         chunk_count = sum(1 for c in document.chunks if c.grounding.score >= min_confidence)
 
         widgets_html.append(f"""
