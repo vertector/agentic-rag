@@ -8,6 +8,7 @@ selectable with rich tooltips — no external JS dependencies required.
 
 import base64
 import html
+import re
 import uuid as _uuid
 from io import BytesIO
 from typing import List
@@ -48,6 +49,13 @@ def _image_dimensions(base64_string: str) -> tuple:
     """Return (width, height) of a base64-encoded image."""
     img = Image.open(BytesIO(base64.b64decode(base64_string)))
     return img.size
+
+
+def _clean_preview(content: str) -> str:
+    """Remove the injected [Context: ...] prefix for cleaner visualization."""
+    # Matches the injected context pattern: [Context: Header: ... | Caption: ...]
+    cleaned = re.sub(r"^\[Context:.*?\]\s*", "", content, flags=re.DOTALL)
+    return cleaned.replace("\n", " ").strip()
 
 
 def display_layout_interactive(
@@ -95,9 +103,8 @@ def display_layout_interactive(
         hover_bg = _hex_to_rgba(color, 0.30)
         selected_bg = _hex_to_rgba(color, 0.40)
 
-        preview = html.escape(
-            (chunk.chunk_markdown or "").replace("\n", " ")[:220]
-        )
+        preview = html.escape(_clean_preview(chunk.chunk_markdown or "")[:220])
+        context = html.escape(getattr(chunk, 'context', "") or "")
         ctype = html.escape(g.chunk_type)
         cid = str(chunk.chunk_id)
         score = f"{g.score:.2f}"
@@ -108,6 +115,7 @@ def display_layout_interactive(
              data-type="{ctype}"
              data-score="{score}"
              data-preview="{preview}"
+             data-context="{context}"
              style="
                position:absolute;
                left:{left_pct:.4f}%;top:{top_pct:.4f}%;
@@ -126,9 +134,12 @@ def display_layout_interactive(
                  this.style.boxShadow='0 0 8px {_hex_to_rgba(color, 0.5)}';
                }}
                var tt=document.getElementById('{widget_id}-tooltip');
+               var ctxHtml = this.dataset.context ? '<div style=\\'font-size:11px;color:#aaa;margin-bottom:4px;font-style:italic;\\'>' + this.dataset.context + '</div>' : '';
                tt.innerHTML='<strong>'+this.dataset.type+'</strong> &middot; score '+this.dataset.score
                  +'<br><span style=\\'font-size:11px;color:#ccc;\\'>'+this.dataset.cid+'</span>'
-                 +(this.dataset.preview?'<hr style=\\'margin:6px 0;border-color:#444\\'/><span style=\\'font-size:12px;line-height:1.4;\\'>'+this.dataset.preview+'</span>':'');
+                 +'<hr style=\\'margin:6px 0;border-color:#444\\'/>'
+                 +ctxHtml
+                 +(this.dataset.preview?'<span style=\\'font-size:12px;line-height:1.4;\\'>'+this.dataset.preview+'</span>':'');
                tt.style.display='block';
              "
              onmouseleave="
@@ -246,10 +257,6 @@ def display_layout_interactive_batch(
 
     container_id = f"batch_{_uuid.uuid4().hex[:10]}"
 
-    # Collect each widget's inner HTML without calling ipy_display per page.
-    # We re-use the existing function's logic by monkey-patching display — 
-    # simpler: just inline the container and call the single-doc function
-    # inside a flex wrapper by capturing its output.
     widgets_html = []
     for document in documents:
         widget_id = f"ilv_{_uuid.uuid4().hex[:10]}"
@@ -276,7 +283,8 @@ def display_layout_interactive_batch(
             hover_bg    = _hex_to_rgba(color, 0.30)
             selected_bg = _hex_to_rgba(color, 0.40)
 
-            preview = html.escape((chunk.chunk_markdown or "").replace("\n", " ")[:220])
+            preview = html.escape(_clean_preview(chunk.chunk_markdown or "")[:220])
+            context = html.escape(getattr(chunk, 'context', "") or "")
             ctype   = html.escape(g.chunk_type)
             cid     = str(chunk.chunk_id)
             score   = f"{g.score:.2f}"
@@ -285,6 +293,7 @@ def display_layout_interactive_batch(
             <div class="{widget_id}-region"
                  data-cid="{cid}" data-type="{ctype}"
                  data-score="{score}" data-preview="{preview}"
+                 data-context="{context}"
                  style="position:absolute;left:{left_pct:.4f}%;top:{top_pct:.4f}%;
                         width:{w_pct:.4f}%;height:{h_pct:.4f}%;
                         background:transparent;border:2px solid transparent;
@@ -297,9 +306,12 @@ def display_layout_interactive_batch(
                      this.style.boxShadow='0 0 8px {_hex_to_rgba(color, 0.5)}';
                    }}
                    var tt=document.getElementById('{widget_id}-tooltip');
+                   var ctxHtml = this.dataset.context ? '<div style=\\'font-size:11px;color:#aaa;margin-bottom:4px;font-style:italic;\\'>' + this.dataset.context + '</div>' : '';
                    tt.innerHTML='<strong>'+this.dataset.type+'</strong> &middot; score '+this.dataset.score
                      +'<br><span style=\\'font-size:11px;color:#ccc;\\'>'+this.dataset.cid+'</span>'
-                     +(this.dataset.preview?'<hr style=\\'margin:6px 0;border-color:#444\\'/><span style=\\'font-size:12px;line-height:1.4;\\'>'+this.dataset.preview+'</span>':'');
+                     +'<hr style=\\'margin:6px 0;border-color:#444\\'/>'
+                     +ctxHtml
+                     +(this.dataset.preview?'<span style=\\'font-size:12px;line-height:1.4;\\'>'+this.dataset.preview+'</span>':'');
                    tt.style.display='block';"
                  onmouseleave="
                    if(!this.classList.contains('selected')){{
