@@ -7,12 +7,14 @@ import hashlib
 import json
 import uuid
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 from urllib.parse import quote, unquote
 
 import redis.asyncio as redis_async
 import numpy as np
+import litellm
 from qdrant_client import AsyncQdrantClient, models
 from shared.schemas import Document, Chunk, Metadata, Grounding
 
@@ -414,22 +416,190 @@ class AsyncMerkleQdrantIngestor:
             raise IngestorError(f"Version activation failed: {exc}") from exc
 
     # ------------------------------------------------------------------
+    # Internal: Hybrid Context Enrichment
+    # ------------------------------------------------------------------
+
+    async def _summarize_chunk(self, chunk: Chunk) -> Optional[str]:
+        """
+        Uses LLM (Gemini 3.1 Flash Lite Preview) to generate a semantic summary of 
+        complex data blocks (tables, charts).
+        
+        Includes a Redis-backed caching layer based on the chunk's structural hash.
+        """
+        label = (chunk.grounding.chunk_type or "unknown").lower()
+        content = chunk.chunk_markdown.strip()
+        
+        # Only summarize data-heavy blocks
+        if label not in ("table", "chart", "figure", "image") and "<table>" not in content.lower():
+            return None
+
+        # --- Cache Lookup ---
+        structural_hash = chunk.get_structural_hash()
+        cache_key = f"cache:summary:{structural_hash}"
+        logger.debug("Checking cache for %s. Key: %s", label, cache_key)
+        try:
+            cached_summary = await self.redis.get(cache_key)
+            if cached_summary:
+                logger.info("Cache hit for %s chunk summary.", label)
+                return cached_summary
+        except Exception as exc:
+            logger.warning("Redis cache lookup failed: %s", exc)
+
+        prompt = f"""
+        Summarize the following {label} from a document. 
+        Focus on the key insights, trends, and data points that would be useful for semantic search.
+        Keep the summary concise but informative (max 3 sentences).
+        
+        Context: {chunk.context}
+        
+        Content:
+        {content}
+        """
+        
+        try:
+            # Use the specified preview model
+            response = await litellm.acompletion(
+                model="gemini/gemini-3.1-flash-lite-preview",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=30.0,
+            )
+            summary = response.choices[0].message.content.strip()
+            
+            # --- Cache Update ---
+            if summary:
+                try:
+                    # Cache for 30 days
+                    await self.redis.set(cache_key, summary, ex=2592000)
+                except Exception as exc:
+                    logger.warning("Redis cache update failed: %s", exc)
+                    
+            return summary
+        except Exception as exc:
+            logger.warning("Summarization failed for %s chunk: %s", label, exc)
+            return None
+
+    def _enrich_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
+        """
+        Enrich a sequence of structural chunks with hierarchical context.
+        Matches logic from DocumentParser but moved here to keep Parser raw.
+        """
+        def strip_html_table(text: str) -> str:
+            """Simple regex to strip HTML tags from a table string to reveal text content."""
+            if "<table>" not in text.lower() and "<table" not in text.lower():
+                return text
+            # Replace tags with spaces to avoid merging words
+            return re.sub(r'<[^>]+>', ' ', text).strip()
+
+        # Robust Label Categories
+        HEADER_LABELS = {"document_title", "paragraph_title", "title"}
+        CAPTION_LABELS = {"table_caption", "figure_caption", "figure_title", "table_title", "caption"}
+        DATA_LABELS = {"table", "figure", "image", "algorithm", "formula"}
+        
+        enriched_chunks = []
+        current_header = ""
+        pending_caption = ""
+        pending_caption_bbox = [0, 0, 0, 0]
+        pending_caption_score = 1.0
+
+        for chunk in chunks:
+            raw_label = chunk.grounding.chunk_type or "unknown"
+            label = raw_label.lower().replace(" ", "_")
+            content = chunk.chunk_markdown.strip()
+            if not content: continue
+
+            # --- State Tracking ---
+            if label in HEADER_LABELS:
+                current_header = content
+                # Headers stay standalone
+            
+            if label in CAPTION_LABELS:
+                if pending_caption:
+                    # Emit previous unmerged caption
+                    enriched_chunks.append(Chunk(
+                        chunk_markdown=pending_caption,
+                        context=f"Header: {current_header}" if current_header else "",
+                        grounding=Grounding(
+                            chunk_type="caption",
+                            bbox=pending_caption_bbox,
+                            page_index=chunk.grounding.page_index,
+                            score=pending_caption_score
+                        )
+                    ))
+                pending_caption = content
+                pending_caption_bbox = chunk.grounding.bbox
+                pending_caption_score = chunk.grounding.score
+                continue # Buffer for potential merge
+            
+            # --- Context Injection & Merging ---
+            chunk_markdown = content
+            context_parts = []
+            
+            if current_header:
+                context_parts.append(f"Header: {current_header}")
+            
+            # We merge captions specifically into 'data' blocks
+            is_table = label == "table" or "<table>" in chunk_markdown.lower()
+            if pending_caption and (label in DATA_LABELS or is_table):
+                chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
+                context_parts.append(f"Caption: {pending_caption}")
+                pending_caption = "" 
+            elif pending_caption:
+                # Flush pending caption if next block is not a merge target
+                enriched_chunks.append(Chunk(
+                    chunk_markdown=pending_caption,
+                    context=f"Header: {current_header}" if current_header else "",
+                    grounding=Grounding(
+                        chunk_type="caption",
+                        bbox=pending_caption_bbox,
+                        page_index=chunk.grounding.page_index,
+                        score=pending_caption_score
+                    )
+                ))
+                pending_caption = ""
+
+            # --- Table Content Flattening (for better vector search) ---
+            # We still keep the original markdown for the final output, 
+            # but we prepend the flattened text to ensure embedding captures it.
+            if is_table:
+                flattened = strip_html_table(chunk_markdown)
+                # Only prepend if it's actually changed something
+                if len(flattened) < len(chunk_markdown):
+                     chunk_markdown = f"{flattened}\n\n{chunk_markdown}"
+
+            context_str = " | ".join(context_parts) if context_parts else ""
+            if context_str and label not in HEADER_LABELS:
+                full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}"
+            else:
+                full_markdown = chunk_markdown
+
+            enriched_chunks.append(Chunk(
+                chunk_markdown=full_markdown,
+                context=context_str,
+                grounding=chunk.grounding
+            ))
+            
+        if pending_caption:
+             enriched_chunks.append(Chunk(
+                chunk_markdown=pending_caption,
+                context=f"Header: {current_header}" if current_header else "",
+                grounding=Grounding(
+                    chunk_type="caption",
+                    bbox=pending_caption_bbox,
+                    page_index=chunks[0].grounding.page_index if chunks else 1,
+                    score=pending_caption_score
+                )
+            ))
+            
+        return enriched_chunks
+
+    # ------------------------------------------------------------------
     # process_document — main write path
     # ------------------------------------------------------------------
 
     async def process_document(self, doc: Document) -> bool:
         """
         Ingest a document with Merkle snapshot versioning.
-
-        Consistency ordering (new-first strategy):
-          1. Compute Merkle root and compare to Redis state.
-          2. Embed all chunks in batches of 100 (yields to event loop between batches).
-          3. Upsert new leaf points + structural root anchor to Qdrant in batches of 200.
-          4. Soft-delete previous version's leaf points (non-fatal on failure).
-          5. Atomically update Redis to point to the new root.
-
-        Returns:
-          bool: True if new data was ingested; False if skipped (idempotent no-op).
+        Enriches chunks with hierarchical context and LLM summaries before ingestion.
         """
         if not doc.chunks:
             logger.warning(
@@ -438,7 +608,19 @@ class AsyncMerkleQdrantIngestor:
             )
             return False
 
-        root_hash = doc.get_merkle_root()
+        # --- Context Enrichment (Hybrid Approach) ---
+        enriched_chunks = self._enrich_chunks(doc.chunks)
+        
+        # --- LLM Summarization (Parallel) ---
+        summaries = await asyncio.gather(*[self._summarize_chunk(c) for c in enriched_chunks])
+        for chunk, summary in zip(enriched_chunks, summaries):
+            chunk.summary = summary
+
+        # Recalculate root based on enriched content (now including summaries)
+        doc_cid = doc.metadata.blob_cid
+        leaf_hashes = [c.get_content_hash(doc_cid) for c in enriched_chunks]
+        root_hash = build_merkle_tree(leaf_hashes)
+
         encoded_fn = _encode_filename(doc.metadata.filename)
         redis_key = (
             f"state:{self.model_id}:doc:{encoded_fn}:page:{doc.metadata.page_index}"
@@ -465,21 +647,17 @@ class AsyncMerkleQdrantIngestor:
                 "Restoring existing version (Object Checkout): %s p.%d",
                 doc.metadata.filename, doc.metadata.page_index,
             )
-            # Activate the restored version
             await self._activate_version(
                 doc.metadata.filename, doc.metadata.page_index, root_hash
             )
-            # Deactivate the current version
             if previous_root:
                 await self._deactivate_previous_version(
                     doc.metadata.filename, doc.metadata.page_index, previous_root
                 )
-            # Update the HEAD pointer in Redis
             try:
                 await self.redis.set(redis_key, root_hash)
             except Exception as exc:
                 raise IngestorError(f"Redis checkout update failed: {exc}") from exc
-
             return True
 
         # --- Standard Ingestion Path ---
@@ -489,7 +667,8 @@ class AsyncMerkleQdrantIngestor:
         )
 
         # 2. Batch embeddings
-        texts = [c.chunk_markdown for c in doc.chunks]
+        # Priority: Summary -> Markdown
+        texts = [c.summary if c.summary else c.chunk_markdown for c in enriched_chunks]
         embeddings: List[np.ndarray] = []
         embed_batch_size = 100
         try:
@@ -498,17 +677,16 @@ class AsyncMerkleQdrantIngestor:
                     self._embed, texts[i : i + embed_batch_size]
                 )
                 embeddings.extend(batch_embeds)
-                await asyncio.sleep(0)   # yield to event loop
+                await asyncio.sleep(0)
         except Exception as exc:
             raise IngestorError(f"Embedding failed: {exc}") from exc
 
         # 3. Build Qdrant point structs
-        now_iso = _utcnow_iso()   # FIX-1: single timezone-aware timestamp
+        now_iso = _utcnow_iso()
         points: List[models.PointStruct] = []
 
-        for idx, (chunk, vector) in enumerate(zip(doc.chunks, embeddings)):
-            chunk_hash = chunk.get_content_hash(doc.metadata.blob_cid)
-            # Deterministic point ID — same chunk+version always upserts same UUID
+        for idx, (chunk, vector) in enumerate(zip(enriched_chunks, embeddings)):
+            chunk_hash = chunk.get_content_hash(doc_cid)
             point_id = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_DNS,
@@ -521,10 +699,12 @@ class AsyncMerkleQdrantIngestor:
                     vector=vector.tolist(),
                     payload={
                         "content": chunk.chunk_markdown,
+                        "summary": chunk.summary,
+                        "context": chunk.context,
                         "metadata": doc.metadata.model_dump(exclude={"page_image_base64"}),
                         "grounding": chunk.grounding.model_dump() if chunk.grounding else {},
                         "chunk_hash": chunk_hash,
-                        "chunk_index": idx,       # preserves sequence for Merkle rebuild
+                        "chunk_index": idx,
                         "version_root": root_hash,
                         "timestamp": now_iso,
                         "is_merkle_leaf": True,
@@ -533,7 +713,6 @@ class AsyncMerkleQdrantIngestor:
                 )
             )
 
-        # Structural root-anchor point (zero-vector — never surfaces in cosine search)
         root_point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"root:{root_hash}"))
         points.append(
             models.PointStruct(
@@ -542,15 +721,15 @@ class AsyncMerkleQdrantIngestor:
                 payload={
                     "is_merkle_root": True,
                     "version_root": root_hash,
-                    "filename": doc.metadata.filename,   # top-level for purge filter
+                    "filename": doc.metadata.filename,
                     "page_index": doc.metadata.page_index,
-                    "chunk_count": len(doc.chunks),
+                    "chunk_count": len(enriched_chunks),
                     "timestamp": now_iso,
                 },
             )
         )
 
-        # 4. Upsert to Qdrant in batches; wait=True on last batch for durability
+        # 4. Upsert to Qdrant
         upsert_batch_size = 200
         try:
             for i in range(0, len(points), upsert_batch_size):
@@ -564,7 +743,7 @@ class AsyncMerkleQdrantIngestor:
         except Exception as exc:
             raise IngestorError(f"Qdrant upsert failed: {exc}") from exc
 
-        # 5. Soft-delete previous version (non-fatal, see method docstring)
+        # 5. Soft-delete previous version
         if previous_root:
             await self._deactivate_previous_version(
                 doc.metadata.filename, doc.metadata.page_index, previous_root
@@ -574,10 +753,7 @@ class AsyncMerkleQdrantIngestor:
         try:
             await self.redis.set(redis_key, root_hash)
         except Exception as exc:
-            raise IngestorError(
-                f"Redis SET failed for key {redis_key} after successful Qdrant upsert. "
-                f"Manual reconciliation may be required. Error: {exc}"
-            ) from exc
+            raise IngestorError(f"Redis SET failed for key {redis_key}: {exc}") from exc
 
         logger.info("Snapshot %s... committed successfully.", root_hash[:8])
         return True

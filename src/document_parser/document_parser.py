@@ -341,26 +341,136 @@ class DocumentParser:
         res.save_to_json(save_path=temp_dir)
         res.save_to_markdown(save_path=temp_dir)
 
+    def _build_chunks(self, json_data: dict, page_index: int) -> List[Chunk]:
+        """
+        Centrally build context-aware chunks using a hybrid approach:
+        1. Hierarchical Context: Track current 'title' to provide breadcrumbs.
+        2. Caption Pairing: Merge captions into subsequent tables/figures.
+        """
+        ignored = set(self._settings.markdown_ignore_labels or [])
+        chunks = []
+        
+        current_header = ""
+        pending_caption = ""
+        pending_caption_bbox = [0, 0, 0, 0]
+        
+        # Robust Label Categories
+        HEADER_LABELS = {"document_title", "paragraph_title", "figure_title", "title"}
+        CAPTION_LABELS = {"table_caption", "figure_caption", "caption"}
+        DATA_LABELS = {
+            "table", "figure", "image", "algorithm", "formula", "text", 
+            "abstract", "table_of_contents", "references", "footnotes", 
+            "vision_footnote", "aside_text", "paragraph"
+        }
+
+        parsing_res = json_data.get("parsing_res_list", [])
+        layout_boxes = json_data.get("layout_det_res", {}).get("boxes", [])
+
+        for i, (block, layout_item) in enumerate(zip(parsing_res, layout_boxes or [{}] * len(parsing_res))):
+            raw_label = block.get("block_label", "unknown")
+            if raw_label in ignored: continue
+            
+            # Normalize label: spaces to underscores, lowercase
+            label = raw_label.lower().replace(" ", "_")
+            
+            content = block.get("block_content", "").strip()
+            if not content: continue
+            
+            bbox = block.get("block_bbox", [0, 0, 0, 0])
+            score = layout_item.get("score", 1.0) if isinstance(layout_item, dict) else 1.0
+
+            # --- State Tracking ---
+            if label in HEADER_LABELS:
+                current_header = content
+                # We still keep headers as standalone chunks for structure
+            
+            if label in CAPTION_LABELS:
+                # If we already had a pending caption that was never merged, emit it now
+                if pending_caption:
+                    chunks.append(Chunk(
+                        chunk_markdown=pending_caption,
+                        context=f"Header: {current_header}" if current_header else "",
+                        grounding=Grounding(
+                            chunk_type="caption",
+                            bbox=pending_caption_bbox,
+                            page_index=page_index,
+                            score=1.0
+                        )
+                    ))
+                pending_caption = content
+                pending_caption_bbox = bbox
+                continue # Do not add as standalone chunk yet; wait to merge
+            
+            # --- Context Injection & Merging ---
+            chunk_markdown = content
+            context_parts = []
+            
+            if current_header:
+                context_parts.append(f"Header: {current_header}")
+            
+            # We merge captions specifically into 'data' blocks like tables/figures/images
+            if pending_caption and label in ("table", "figure", "image", "algorithm", "formula"):
+                # Merge caption into the data block
+                chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
+                context_parts.append(f"Caption: {pending_caption}")
+                pending_caption = "" # Reset
+            elif pending_caption:
+                # If we have a caption but the next block isn't a data block, 
+                # emit the caption as its own chunk so it's not lost.
+                chunks.append(Chunk(
+                    chunk_markdown=pending_caption,
+                    context=f"Header: {current_header}" if current_header else "",
+                    grounding=Grounding(
+                        chunk_type="caption",
+                        bbox=pending_caption_bbox,
+                        page_index=page_index,
+                        score=1.0
+                    )
+                ))
+                pending_caption = ""
+
+            # Prepend context to markdown for better embedding matches
+            context_str = " | ".join(context_parts) if context_parts else ""
+            
+            # Don't prepend context to the header itself to avoid redundancy
+            if context_str and label not in HEADER_LABELS:
+                full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}"
+            else:
+                full_markdown = chunk_markdown
+
+            chunks.append(Chunk(
+                chunk_markdown=full_markdown,
+                context=context_str,
+                grounding=Grounding(
+                    chunk_type=raw_label, # Keep original label for metadata
+                    bbox=bbox,
+                    page_index=page_index,
+                    score=score
+                )
+            ))
+            
+        # Cleanup: if a caption was at the end of the page and never merged
+        if pending_caption:
+             chunks.append(Chunk(
+                chunk_markdown=pending_caption,
+                context=f"Header: {current_header}" if current_header else "",
+                grounding=Grounding(
+                    chunk_type="caption",
+                    bbox=pending_caption_bbox,
+                    page_index=page_index,
+                    score=1.0
+                )
+            ))
+            
+        return chunks
+
     def _process_page(self, page_output: dict, json_path: Path, md_path: Path, blob_cid: Optional[str] = None) -> Document:
         """Build Document from saved page files."""
         with open(json_path, "r", encoding="utf-8") as f: json_data = json.load(f)
         with open(md_path, "r", encoding="utf-8") as f: md_data = f.read()
 
         page_index = (json_data.get("page_index") or 0) + 1
-        ignored = set(self._settings.markdown_ignore_labels or [])
-        chunks = [
-            Chunk(
-                chunk_markdown=data.get("block_content", ""),
-                grounding=Grounding(
-                    chunk_type=data.get("block_label", "unknown"),
-                    bbox=data.get("block_bbox", [0, 0, 0, 0]),
-                    score=item.get("score", 0.0),
-                    page_index=page_index,
-                ),
-            )
-            for data, item in zip(json_data.get("parsing_res_list", []), json_data.get("layout_det_res", {}).get("boxes", []))
-            if data.get("block_label", "unknown") not in ignored
-        ]
+        chunks = self._build_chunks(json_data, page_index)
 
         output_img = page_output.get("doc_preprocessor_res", {}).get("output_img")
         metadata = Metadata(
@@ -449,23 +559,7 @@ class DocumentParser:
     def _reassemble_page(self, raw_ocr: dict, blob_cid: str, page_index: int, page_count: int) -> Document:
         """Convert raw OCR/VLM data into a semantically valid Document object for a specific ordinal position."""
         # This solves Flaw 7: Ordinal position is injected at reassembly, not baked into the OCR cache.
-        ignored = set(self._settings.markdown_ignore_labels or [])
-        
-        # We need to rebuild chunks with the CURRENT page context
-        chunks = []
-        for block in raw_ocr.get("parsing_res_list", []):
-            label = block.get("block_label", "unknown")
-            if label in ignored: continue
-            
-            chunks.append(Chunk(
-                chunk_markdown=block.get("block_content", ""),
-                grounding=Grounding(
-                    chunk_type=label,
-                    bbox=block.get("block_bbox", [0, 0, 0, 0]),
-                    page_index=page_index,
-                    score=1.0 # Placeholder
-                )
-            ))
+        chunks = self._build_chunks(raw_ocr, page_index)
 
         metadata = Metadata(
             filename=raw_ocr.get("input_path", "unknown"),
