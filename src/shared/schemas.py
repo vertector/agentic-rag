@@ -92,9 +92,33 @@ class Chunk(_Base):
         default="",
         description="Markdown-formatted content of the chunk",
     )
+    summary: Optional[str] = Field(
+        default=None,
+        description="Optional LLM-generated summary of the chunk (e.g. for tables/charts).",
+    )
+    context: str = Field(
+        default="",
+        description="Optional context (e.g. headers, captions) associated with this chunk.",
+    )
     grounding: Grounding = Field(
         description="Spatial grounding information for this chunk",
     )
+
+    def get_structural_hash(self) -> str:
+        """
+        Deterministic hash for caching LLM outputs (summaries).
+        Includes content and context but EXCLUDES the summary itself.
+        """
+        payload = {
+            "m": self.chunk_markdown,
+            "c": self.context,
+            "t": self.grounding.chunk_type,
+            "b": self.grounding.bbox,
+            "p": self.grounding.page_index,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
 
     def get_content_hash(self, doc_cid: Optional[str] = None) -> str:
         """
@@ -105,10 +129,12 @@ class Chunk(_Base):
         """
         payload = {
             "m": self.chunk_markdown,
+            "s": self.summary, # Include summary in hash
+            "c": self.context, # Contextual identity
             "t": self.grounding.chunk_type,
             "b": self.grounding.bbox,
             "p": self.grounding.page_index,
-            "doc": doc_cid, # Contextual identity (Flaw 6)
+            "doc": doc_cid, # Document identity
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode("utf-8")
