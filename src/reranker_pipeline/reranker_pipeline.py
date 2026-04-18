@@ -132,6 +132,7 @@ class _Candidate:
     point_id: str
     content: str
     payload: dict
+    summary: Optional[str] = None
     rrf_score: float = 0.0
     ce_score: float = 0.0
     final_score: float = 0.0
@@ -332,6 +333,7 @@ class HybridReranker:
             cand = _Candidate(
                 point_id=str(pt.id),
                 content=p.get("content", ""),
+                summary=p.get("summary"),
                 payload=p,
                 retrieval_sources=["vector"],
             )
@@ -384,6 +386,7 @@ class HybridReranker:
                 clone = _Candidate(
                     point_id=cand.point_id,
                     content=cand.content,
+                    summary=cand.summary,
                     payload=cand.payload,
                     retrieval_sources=["sparse"],
                 )
@@ -422,6 +425,7 @@ class HybridReranker:
                     merged_candidates[pid] = _Candidate(
                         point_id=pid,
                         content=cand.content,
+                        summary=cand.summary,
                         payload=cand.payload,
                         retrieval_sources=list(cand.retrieval_sources),
                     )
@@ -454,35 +458,32 @@ class HybridReranker:
     ) -> List[_Candidate]:
         """
         Scores every (query, chunk_content) pair with the cross-encoder.
-
-        Runs in asyncio.to_thread so the event loop stays unblocked.
-        Results from the in-process cache are injected before inference
-        so only unseen pairs pay the compute cost.
-
-        All pairs in a batch are scored in a single model.predict() call
-        for maximum GPU/CPU utilisation.
+        Prioritises summaries for scoring if available.
         """
         if not candidates:
             return candidates
 
         cache_hits = 0
-        pairs_to_score: List[tuple] = []       # (idx, query, content)
+        pairs_to_score: List[tuple] = []       # (idx, query, scoring_text)
 
         # Populate from cache first
         for idx, cand in enumerate(candidates):
-            cached = self._cache.get(query, cand.content)
+            # Decide which text to score: Summary > Content
+            scoring_text = cand.summary if cand.summary else cand.content
+            
+            cached = self._cache.get(query, scoring_text)
             if cached is not None:
                 cand.ce_score = cached
                 cache_hits += 1
             else:
-                pairs_to_score.append((idx, query, cand.content))
+                pairs_to_score.append((idx, query, scoring_text))
 
         if cache_hits:
             logger.debug("CE cache: %d hits, %d misses", cache_hits, len(pairs_to_score))
 
         # Batch-score uncached pairs
         if pairs_to_score:
-            all_pairs = [[q, c] for (_, q, c) in pairs_to_score]
+            all_pairs = [[q, txt] for (_, q, txt) in pairs_to_score]
             try:
                 scores: np.ndarray = await asyncio.to_thread(
                     self._ce.predict, all_pairs, batch_size=self.CE_BATCH_SIZE
@@ -494,10 +495,10 @@ class HybridReranker:
                     candidates[idx].ce_score = candidates[idx].rrf_score
                 return candidates
 
-            for (idx, q, content), score in zip(pairs_to_score, scores):
+            for (idx, q, scoring_text), score in zip(pairs_to_score, scores):
                 s = float(score)
                 candidates[idx].ce_score = s
-                self._cache.set(q, content, s)
+                self._cache.set(q, scoring_text, s)
 
         return candidates
 
