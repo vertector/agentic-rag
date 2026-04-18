@@ -70,9 +70,14 @@ async def run_demo():
     # print("\n═══ STEP 2: Ingest manifest.json ═══")
     # await invoke(session_id, f"Ingest {SAMPLE_MANIFEST_JSON}.")
 
-    # ── 3. Audit page 1
-    print("\n═══ STEP 3: Integrity audit — page 1 ═══")
-    await invoke(session_id, f"Verify integrity of {SAMPLE_FILENAME} page 1.")
+    # # ── 3. Audit page 1
+    # print("\n═══ STEP 3: Integrity audit — page 1 ═══")
+    # await invoke(session_id, f"Verify integrity of {SAMPLE_FILENAME} page 1.")
+
+
+    # ── 4. Search test (User requested)
+    print("\n═══ STEP 4: Search test ═══")
+    await invoke(session_id, "What was the percentage gain when using balanced batch sampling?")
 
     # # ── 4. Version history
     # print("\n═══ STEP 4: Version history ═══")
