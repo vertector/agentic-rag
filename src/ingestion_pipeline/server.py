@@ -523,7 +523,16 @@ async def ingest(
     skipped  = 0
     errors: List[dict] = []
 
+    # State for hierarchical context persistence across pages
+    current_file = ""
+    header_state: List[str] = []
+
     for i, doc in enumerate(documents):
+        # Reset context if filename changes
+        if doc.metadata.filename != current_file:
+            current_file = doc.metadata.filename
+            header_state = []
+
         progress = 0.05 + 0.90 * (i / max(total, 1))
         logger.info(f"Ingesting page {i + 1}/{total}: {doc.metadata.filename} p.{doc.metadata.page_index}")
         # Detect no-chunk pages before hitting the ingestor
@@ -538,8 +547,13 @@ async def ingest(
             doc.metadata.corpus_id = params.corpus_id
             
         try:
-            # process_document is idempotent — returns True if actually written, False if skipped
-            if await ingestor.process_document(doc):
+            # process_document is idempotent — returns (success, next_state)
+            success, header_state = await ingestor.process_document(
+                doc, 
+                initial_header_state=header_state,
+                use_deep_context=getattr(params, "use_deep_context", True)
+            )
+            if success:
                 ingested += 1
             else:
                 skipped += 1

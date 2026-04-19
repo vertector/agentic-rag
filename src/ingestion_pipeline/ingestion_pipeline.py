@@ -17,6 +17,7 @@ import numpy as np
 import litellm
 from qdrant_client import AsyncQdrantClient, models
 from shared.schemas import Document, Chunk, Metadata, Grounding
+from shared.utils import HeaderStack
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -478,10 +479,15 @@ class AsyncMerkleQdrantIngestor:
             logger.warning("Summarization failed for %s chunk: %s", label, exc)
             return None
 
-    def _enrich_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
+    def _enrich_chunks(
+        self, 
+        chunks: List[Chunk], 
+        header_stack: Optional[HeaderStack] = None,
+        use_deep_context: bool = True
+    ) -> tuple[List[Chunk], HeaderStack]:
         """
         Enrich a sequence of structural chunks with hierarchical context.
-        Matches logic from DocumentParser but moved here to keep Parser raw.
+        Returns: (enriched_chunks, updated_header_stack)
         """
         def strip_html_table(text: str) -> str:
             """Simple regex to strip HTML tags from a table string to reveal text content."""
@@ -491,12 +497,13 @@ class AsyncMerkleQdrantIngestor:
             return re.sub(r'<[^>]+>', ' ', text).strip()
 
         # Robust Label Categories
-        HEADER_LABELS = {"document_title", "paragraph_title", "title"}
-        CAPTION_LABELS = {"table_caption", "figure_caption", "figure_title", "table_title", "caption"}
+        HEADER_LABELS = {"document_title", "paragraph_title", "title", "section_title", "figure_title"}
+        CAPTION_LABELS = {"table_caption", "figure_caption", "caption"}
         DATA_LABELS = {"table", "figure", "image", "algorithm", "formula"}
         
         enriched_chunks = []
-        current_header = ""
+        stack = header_stack or HeaderStack()
+        
         pending_caption = ""
         pending_caption_bbox = [0, 0, 0, 0]
         pending_caption_score = 1.0
@@ -509,7 +516,8 @@ class AsyncMerkleQdrantIngestor:
 
             # --- State Tracking ---
             if label in HEADER_LABELS:
-                current_header = content
+                level = HeaderStack.get_level(label, content)
+                stack.push(level, content)
                 # Headers stay standalone
             
             if label in CAPTION_LABELS:
@@ -517,7 +525,7 @@ class AsyncMerkleQdrantIngestor:
                     # Emit previous unmerged caption
                     enriched_chunks.append(Chunk(
                         chunk_markdown=pending_caption,
-                        context=f"Header: {current_header}" if current_header else "",
+                        context=stack.format_breadcrumb() if use_deep_context else "",
                         grounding=Grounding(
                             chunk_type="caption",
                             bbox=pending_caption_bbox,
@@ -532,22 +540,20 @@ class AsyncMerkleQdrantIngestor:
             
             # --- Context Injection & Merging ---
             chunk_markdown = content
-            context_parts = []
-            
-            if current_header:
-                context_parts.append(f"Header: {current_header}")
+            context_str = stack.format_breadcrumb() if use_deep_context else ""
             
             # We merge captions specifically into 'data' blocks
             is_table = label == "table" or "<table>" in chunk_markdown.lower()
             if pending_caption and (label in DATA_LABELS or is_table):
                 chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
-                context_parts.append(f"Caption: {pending_caption}")
+                # Append caption to context for these blocks
+                context_str = f"{context_str} | Caption: {pending_caption}" if context_str else f"Caption: {pending_caption}"
                 pending_caption = "" 
             elif pending_caption:
                 # Flush pending caption if next block is not a merge target
                 enriched_chunks.append(Chunk(
                     chunk_markdown=pending_caption,
-                    context=f"Header: {current_header}" if current_header else "",
+                    context=stack.format_breadcrumb() if use_deep_context else "",
                     grounding=Grounding(
                         chunk_type="caption",
                         bbox=pending_caption_bbox,
@@ -557,16 +563,12 @@ class AsyncMerkleQdrantIngestor:
                 ))
                 pending_caption = ""
 
-            # --- Table Content Flattening (for better vector search) ---
-            # We still keep the original markdown for the final output, 
-            # but we prepend the flattened text to ensure embedding captures it.
+            # --- Table Content Flattening ---
             if is_table:
                 flattened = strip_html_table(chunk_markdown)
-                # Only prepend if it's actually changed something
                 if len(flattened) < len(chunk_markdown):
                      chunk_markdown = f"{flattened}\n\n{chunk_markdown}"
 
-            context_str = " | ".join(context_parts) if context_parts else ""
             if context_str and label not in HEADER_LABELS:
                 full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}"
             else:
@@ -581,7 +583,7 @@ class AsyncMerkleQdrantIngestor:
         if pending_caption:
              enriched_chunks.append(Chunk(
                 chunk_markdown=pending_caption,
-                context=f"Header: {current_header}" if current_header else "",
+                context=stack.format_breadcrumb() if use_deep_context else "",
                 grounding=Grounding(
                     chunk_type="caption",
                     bbox=pending_caption_bbox,
@@ -590,26 +592,39 @@ class AsyncMerkleQdrantIngestor:
                 )
             ))
             
-        return enriched_chunks
+        return enriched_chunks, stack
 
     # ------------------------------------------------------------------
     # process_document — main write path
     # ------------------------------------------------------------------
 
-    async def process_document(self, doc: Document) -> bool:
+    async def process_document(
+        self, 
+        doc: Document, 
+        initial_header_state: Optional[List[str]] = None,
+        use_deep_context: bool = True
+    ) -> tuple[bool, List[str]]:
         """
         Ingest a document with Merkle snapshot versioning.
         Enriches chunks with hierarchical context and LLM summaries before ingestion.
+
+        Returns: (bool actually_written, List[str] final_header_state)
         """
         if not doc.chunks:
             logger.warning(
                 "Document %s p.%d has no chunks — skipped.",
                 doc.metadata.filename, doc.metadata.page_index,
             )
-            return False
+            return False, (initial_header_state or [])
 
         # --- Context Enrichment (Hybrid Approach) ---
-        enriched_chunks = self._enrich_chunks(doc.chunks)
+        initial_stack = HeaderStack(initial_state=initial_header_state)
+        enriched_chunks, updated_stack = self._enrich_chunks(
+            doc.chunks, 
+            header_stack=initial_stack,
+            use_deep_context=use_deep_context
+        )
+        final_state = updated_stack.get_state()
         
         # --- LLM Summarization (Parallel) ---
         summaries = await asyncio.gather(*[self._summarize_chunk(c) for c in enriched_chunks])
@@ -637,7 +652,7 @@ class AsyncMerkleQdrantIngestor:
                 "Synced (no change): %s p.%d (root: %s...)",
                 doc.metadata.filename, doc.metadata.page_index, root_hash[:8],
             )
-            return False
+            return False, final_state
 
         # --- Restoration Path (Git-style checkout) ---
         if await self._check_version_exists(
@@ -658,7 +673,7 @@ class AsyncMerkleQdrantIngestor:
                 await self.redis.set(redis_key, root_hash)
             except Exception as exc:
                 raise IngestorError(f"Redis checkout update failed: {exc}") from exc
-            return True
+            return True, final_state
 
         # --- Standard Ingestion Path ---
         logger.info(
@@ -756,7 +771,7 @@ class AsyncMerkleQdrantIngestor:
             raise IngestorError(f"Redis SET failed for key {redis_key}: {exc}") from exc
 
         logger.info("Snapshot %s... committed successfully.", root_hash[:8])
-        return True
+        return True, final_state
 
     # ------------------------------------------------------------------
     # verify_integrity  (FIX-2: paginated scroll)

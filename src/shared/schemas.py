@@ -334,6 +334,10 @@ class PipelineSettings(_Base):
         default=True,
         description="Automatically adjust paragraph title levels for structure",
     )
+    use_deep_context: bool = Field(
+        default=True,
+        description="Enable multi-level hierarchical breadcrumbs (e.g. 'Intro > Data > Tables') that persist across pages.",
+    )
     markdown_ignore_labels: List[str] = Field(
         default_factory=list,
         description="Layout labels to ignore when generating markdown",
