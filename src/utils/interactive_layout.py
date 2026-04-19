@@ -53,7 +53,7 @@ def _image_dimensions(base64_string: str) -> tuple:
 
 def _clean_preview(content: str) -> str:
     """Remove the injected [Context: ...] prefix for cleaner visualization."""
-    # Matches the injected context pattern: [Context: Header: ... | Caption: ...]
+    # Matches the injected context pattern: [Context: Header: Intro > Data | Caption: ...]
     cleaned = re.sub(r"^\[Context:.*?\]\s*", "", content, flags=re.DOTALL)
     return cleaned.replace("\n", " ").strip()
 

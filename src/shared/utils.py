@@ -3,7 +3,74 @@ import re
 import json
 import tempfile
 from pathlib import Path
-from typing import Set, Union
+from typing import List, Optional, Set, Union
+
+class HeaderStack:
+    """
+    Manages a stack of document headers to provide hierarchical context (breadcrumbs).
+    
+    Logic:
+    - Level 0 (e.g. document_title) clears the entire stack.
+    - Level N (e.g. paragraph_title or ##) replaces headers at the same or lower level (>= N).
+    """
+    def __init__(self, initial_state: Optional[List[str]] = None):
+        # List of (level, title) tuples
+        self._stack: List[tuple[int, str]] = []
+        if initial_state:
+            # Reconstruct from serialized state: assumes sequential levels 0, 1, 2...
+            for i, title in enumerate(initial_state):
+                self._stack.append((i, title))
+
+    @staticmethod
+    def get_level(label: str, content: str = "") -> int:
+        """
+        Determines the hierarchical level of a header block.
+        0 = Document Title
+        1 = Section / H1
+        2 = Subsection / H2
+        ...
+        """
+        label = label.lower().replace(" ", "_")
+        
+        # 1. Hard-coded OCR Labels
+        if label == "document_title":
+            return 0
+        if label in ("paragraph_title", "title", "section_title"):
+            # Check markdown depth if content starts with #
+            stripped = content.strip()
+            if stripped.startswith("#"):
+                match = re.match(r'^(#+)', stripped)
+                if match:
+                    return len(match.group(1))
+            return 1 # Default level for paragraph_title
+        
+        if label == "figure_title":
+            return 2 # Usually nested under a section
+            
+        return 1 # Fallback for unknown titles
+
+    def push(self, level: int, title: str) -> None:
+        """Adds a new header at the specified level, popping lower levels."""
+        # Clean title: strip markdown headers if present
+        clean_title = re.sub(r'^#+\s*', '', title.strip())
+        if not clean_title: return
+
+        if level == 0:
+            self._stack = [(0, clean_title)]
+        # Keep only levels strictly higher (smaller number) than the current level
+        self._stack = [h for h in self._stack if h[0] < level]
+        self._stack.append((level, clean_title))
+
+    def format_breadcrumb(self, separator: str = " > ") -> str:
+        """Returns the formatted breadcrumb string (e.g. 'Intro > Data > Tables')."""
+        return separator.join(h[1] for h in self._stack)
+
+    def get_state(self) -> List[str]:
+        """Returns a serializable list of titles for cross-page persistence."""
+        return [h[1] for h in self._stack]
+
+    def __bool__(self) -> bool:
+        return len(self._stack) > 0
 
 def get_project_root() -> Path:
     """Returns the absolute path to the project root."""
