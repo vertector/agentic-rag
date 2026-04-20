@@ -8,18 +8,22 @@ from typing import List, Optional, Set, Union
 class HeaderStack:
     """
     Manages a stack of document headers to provide hierarchical context (breadcrumbs).
-    
+
     Logic:
     - Level 0 (e.g. document_title) clears the entire stack.
     - Level N (e.g. paragraph_title or ##) replaces headers at the same or lower level (>= N).
     """
-    def __init__(self, initial_state: Optional[List[str]] = None):
+    def __init__(self, initial_state: Optional[List[Union[str, tuple[int, str]]]] = None):
         # List of (level, title) tuples
         self._stack: List[tuple[int, str]] = []
         if initial_state:
-            # Reconstruct from serialized state: assumes sequential levels 0, 1, 2...
-            for i, title in enumerate(initial_state):
-                self._stack.append((i, title))
+            for item in initial_state:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    self._stack.append((int(item[0]), str(item[1])))
+                else:
+                    # Backward compatibility for flat list of strings
+                    # We assume sequential levels 1, 2, 3... (0 is usually reserved for doc title)
+                    self._stack.append((len(self._stack) + 1, str(item)))
 
     @staticmethod
     def get_level(label: str, content: str = "") -> int:
@@ -31,24 +35,34 @@ class HeaderStack:
         ...
         """
         label = label.lower().replace(" ", "_")
-        
+        content_lower = content.lower().strip()
+
         # 1. Hard-coded OCR Labels
         if label == "document_title":
             return 0
-        if label in ("paragraph_title", "title", "section_title"):
-            # Check markdown depth if content starts with #
-            stripped = content.strip()
-            if stripped.startswith("#"):
-                match = re.match(r'^(#+)', stripped)
-                if match:
-                    return len(match.group(1))
-            return 1 # Default level for paragraph_title
-        
-        if label == "figure_title":
-            return 2 # Usually nested under a section
-            
-        return 1 # Fallback for unknown titles
 
+        # 2. Caption detection (Robust fallback for mislabeled OCR)
+        # If it looks like a caption (Table 1, Figure 2, etc.), give it a very low priority
+        # so it doesn't pop actual section headers.
+        is_caption = (
+            "table_caption" in label or 
+            "figure_caption" in label or 
+            "figure_title" in label or
+            re.match(r'^(table|figure|fig\.|chart)\s+\d+', content_lower)
+        )
+        if is_caption:
+            return 10 # Deep level for captions
+
+        # 3. Markdown depth if content starts with #
+        if content_lower.startswith("#"):
+            match = re.match(r'^(#+)', content_lower)
+            if match:
+                return len(match.group(1))
+
+        if label in ("paragraph_title", "title", "section_title", "section_header"):
+            return 1 # Default level for paragraph_title
+
+        return 1 # Fallback for unknown titles
     def push(self, level: int, title: str) -> None:
         """Adds a new header at the specified level, popping lower levels."""
         # Clean title: strip markdown headers if present
@@ -57,6 +71,8 @@ class HeaderStack:
 
         if level == 0:
             self._stack = [(0, clean_title)]
+            return
+
         # Keep only levels strictly higher (smaller number) than the current level
         self._stack = [h for h in self._stack if h[0] < level]
         self._stack.append((level, clean_title))
@@ -65,13 +81,12 @@ class HeaderStack:
         """Returns the formatted breadcrumb string (e.g. 'Intro > Data > Tables')."""
         return separator.join(h[1] for h in self._stack)
 
-    def get_state(self) -> List[str]:
-        """Returns a serializable list of titles for cross-page persistence."""
-        return [h[1] for h in self._stack]
+    def get_state(self) -> List[tuple[int, str]]:
+        """Returns a serializable list of (level, title) for cross-page persistence."""
+        return self._stack
 
     def __bool__(self) -> bool:
         return len(self._stack) > 0
-
 def get_project_root() -> Path:
     """Returns the absolute path to the project root."""
     # src/shared/utils.py -> parent: shared, parent.parent: src, parent.parent.parent: root

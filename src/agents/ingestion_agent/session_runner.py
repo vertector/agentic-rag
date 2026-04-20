@@ -62,17 +62,17 @@ async def run_demo():
     )
     logger.info("Session: %s", session_id)
 
-    # # ── 1. Status check
-    # print("\n═══ STEP 1: Connectivity check ═══")
-    # await invoke(session_id, "Check ingestor status — confirm Qdrant and Redis are reachable.")
+    # ── 1. Status check
+    print("\n═══ STEP 1: Connectivity check ═══")
+    await invoke(session_id, "Check ingestor status — confirm Qdrant and Redis are reachable.")
 
-    # # ── 2. Ingest
-    # print("\n═══ STEP 2: Ingest manifest.json ═══")
-    # await invoke(session_id, f"Ingest {SAMPLE_MANIFEST_JSON}.")
+    # ── 2. Ingest
+    print("\n═══ STEP 2: Ingest manifest.json ═══")
+    await invoke(session_id, f"Ingest {SAMPLE_MANIFEST_JSON}.")
 
-    # # ── 3. Audit page 1
-    # print("\n═══ STEP 3: Integrity audit — page 1 ═══")
-    # await invoke(session_id, f"Verify integrity of {SAMPLE_FILENAME} page 1.")
+    # ── 3. Audit page 1
+    print("\n═══ STEP 3: Integrity audit — page 1 ═══")
+    await invoke(session_id, f"Verify integrity of {SAMPLE_FILENAME} page 1.")
 
 
     # ── 4. Search test (User requested)

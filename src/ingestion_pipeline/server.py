@@ -228,6 +228,14 @@ class IngestInput(BaseModel):
         default="",
         description="Optional description if creating a new corpus.",
     )
+    use_deep_context: bool = Field(
+        default=True,
+        description="Enable multi-level hierarchical breadcrumbs (e.g. 'Intro > Data > Tables') that persist across pages.",
+    )
+    initial_header_state: Optional[List[Any]] = Field(
+        default=None,
+        description="Optional list representing the starting hierarchical breadcrumbs (e.g. ['Chapter 1'] or [[1, 'Chapter 1']]).",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -236,6 +244,10 @@ class IngestInput(BaseModel):
             # Map file_name -> file_path for compatibility
             if "file_name" in data and "file_path" not in data:
                 data["file_path"] = data.pop("file_name")
+
+            # Map header_state -> initial_header_state for compatibility
+            if "header_state" in data and "initial_header_state" not in data:
+                data["initial_header_state"] = data.pop("header_state")
 
             # Resolve to absolute path if provided
             if data.get("file_path"):
@@ -471,6 +483,8 @@ async def ingest(
     documents: Optional[List[dict]] = None,
     corpus_id: Optional[str] = None,
     corpus_description: Optional[str] = "",
+    use_deep_context: bool = True,
+    initial_header_state: Optional[List[str]] = None,
 ) -> str:
     """
     Ingest one or more document pages into the Qdrant vector store.
@@ -482,6 +496,12 @@ async def ingest(
 
     Supply EITHER file_path (path to manifest.json from document_parser_mcp)
     OR documents (inline array of Document dicts). Not both.
+
+    use_deep_context (default: True) enables multi-level hierarchical 
+    breadcrumbs (e.g. 'Intro > Data > Tables') that persist across pages.
+
+    initial_header_state: Optional list of strings representing the 
+    starting hierarchical breadcrumbs.
     """
     try:
         params = IngestInput(**{k: v for k, v in {
@@ -489,6 +509,8 @@ async def ingest(
             "documents": documents,
             "corpus_id": corpus_id,
             "corpus_description": corpus_description,
+            "use_deep_context": use_deep_context,
+            "initial_header_state": initial_header_state,
         }.items() if v is not None})
     except Exception as exc:
         return _error("ValidationError", str(exc),
@@ -525,13 +547,16 @@ async def ingest(
 
     # State for hierarchical context persistence across pages
     current_file = ""
-    header_state: List[str] = []
+    header_state: List[str] = params.initial_header_state or []
 
     for i, doc in enumerate(documents):
         # Reset context if filename changes
         if doc.metadata.filename != current_file:
             current_file = doc.metadata.filename
-            header_state = []
+            # If we are just starting and have an initial_header_state, use it.
+            # Otherwise, reset if the filename changed from a previous one.
+            if i > 0:
+                header_state = []
 
         progress = 0.05 + 0.90 * (i / max(total, 1))
         logger.info(f"Ingesting page {i + 1}/{total}: {doc.metadata.filename} p.{doc.metadata.page_index}")
@@ -594,6 +619,7 @@ async def ingest(
         "total_pages": total,
         "errors": errors,
         "collection": ingestor.collection_name,
+        "header_state": header_state,
     }
     if errors:
         result["warning"] = (
@@ -1183,8 +1209,23 @@ async def get_blob(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import sys
+    import logging
+
+    # MCP stdio transport MUST own stdout. 
+    # Any library using print() will corrupt the protocol.
+    # We redirect the real sys.stdout to sys.stderr globally 
+    # except when the MCP server is actually starting its main loop.
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr, # Explicitly use stderr for logging
     )
+    
+    # Restore stdout JUST before the mcp.run() call so the protocol can use it.
+    # FastMCP uses the real_stdout for its communication.
+    sys.stdout = real_stdout
     mcp.run()   # stdio transport — Claude Desktop communicates over stdin/stdout
