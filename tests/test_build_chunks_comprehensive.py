@@ -45,37 +45,38 @@ def test_build_chunks_comprehensive():
         print(f"  Markdown: {repr(c.chunk_markdown[:100])}...")
 
     # --- Assertions ---
-    
-    # 1. Labels with spaces should be normalized and track context
-    # Chunk 0: document title (normalized to document_title)
+
+    # 1. Labels should be preserved
     assert chunks[0].grounding.chunk_type == "document title"
-    
-    # 2. paragraph title should update current_header
-    # Chunk 1: paragraph title
+
+    # 2. paragraph title should stay as its own chunk
     assert chunks[1].grounding.chunk_type == "paragraph title"
-    
-    # 3. text should have context from titles
-    assert "Header: 1. Introduction" in chunks[2].context
-    
-    # 4. table caption should be merged into table
-    # Chunk 3 is now the table (because caption was merged)
-    assert chunks[3].grounding.chunk_type == "table"
-    assert "Caption: Table 1: Performance" in chunks[3].context
-    assert "Table 1: Performance" in chunks[3].chunk_markdown
-    
-    # 5. vision_footnote should exist and have context
-    assert chunks[4].grounding.chunk_type == "vision_footnote"
-    assert "Header: 1. Introduction" in chunks[4].context
-    
-    # 6. figure caption should be merged into figure
-    assert chunks[5].grounding.chunk_type == "figure"
-    assert "Caption: Figure A: Architecture" in chunks[5].context
-    
-    # 7. ignore labels should work
+
+    # 3. Pristine chunks should have EMPTY context in DocumentParser
+    # Enrichment now happens in IngestionPipeline
+    assert chunks[2].context == ""
+
+    # 4. table caption should NOT be merged in DocumentParser
+    # Chunk 3 is now the table caption
+    assert chunks[3].grounding.chunk_type == "table caption"
+    assert "Table 1" in chunks[3].chunk_markdown
+
+    # Chunk 4 is the table
+    assert chunks[4].grounding.chunk_type == "table"
+    assert chunks[4].context == ""
+
+    # 5. vision_footnote should exist as its own chunk
+    assert chunks[5].grounding.chunk_type == "vision_footnote"
+    assert chunks[5].context == ""
+
+    # 6. figure caption should be its own chunk
+    assert chunks[6].grounding.chunk_type == "figure caption"
+
+    # 7. ignore labels should work (page number was ignored, so only 8 chunks total)
+    assert len(chunks) == 8
     for c in chunks:
         assert c.grounding.chunk_type != "page number"
 
     print("\n[SUCCESS] Comprehensive unit test for _build_chunks logic passed!")
-
 if __name__ == "__main__":
     test_build_chunks_comprehensive()
