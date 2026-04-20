@@ -39,6 +39,9 @@ metadata:
 3. **Build params dict**:
    - `file_path` (resolved to absolute path) OR `documents`.
    - `corpus_id` and `category` if provided/pinned in state.
+   - `use_deep_context`: set to `True` (default) for rich hierarchical context.
+   - `initial_header_state`: for multi-page document continuity, pass the 
+     `header_state` from a previous turn (if the filename matches).
    - Do not add extra fields — `IngestInput` has `extra="forbid"`.
 
 4. **Call `ingest`**.
@@ -47,10 +50,12 @@ metadata:
    - Extract `filename` from the manifest.json metadata or from the inline first doc.
    - Persist to `session.state["ingestor:last_ingested_file"]`.
    - Persist full result to `session.state["ingestor:last_ingest_summary"]`.
+   - Persist final `header_state` to `session.state["ingestor:header_state"]`.
    - Append `{file, ingested, skipped, errors}` to `ingestor:session_ingest_log`
      (cap at 100 entries).
    - Save artifact `ingest_{stem}_{invocation_id}.json`.
    - Set `session.state["ingestor:connected"] = True`.
+   - Conclude with the signal: `Ingested [N] page(s) into [collection]. [Ready for Retrieval]`
    - Return the full result JSON.
 
 6. **On partial errors** (`errors[]` non-empty but `ingested > 0`):

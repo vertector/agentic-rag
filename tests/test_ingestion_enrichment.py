@@ -1,4 +1,4 @@
-
+import pytest
 import asyncio
 import sys
 from pathlib import Path
@@ -40,12 +40,13 @@ def get_mock_document():
         ]
     )
 
+@pytest.mark.anyio
 async def test_enrichment_logic():
     ingestor = AsyncMerkleQdrantIngestor(qdrant_url="http://localhost:6333")
     doc = get_mock_document()
     
     print("\n--- Testing Ingestor-Stage Enrichment ---")
-    enriched = ingestor._enrich_chunks(doc.chunks)
+    enriched, stack = ingestor._enrich_chunks(doc.chunks)
     
     print(f"Original chunks: {len(doc.chunks)}")
     print(f"Enriched chunks: {len(enriched)}")
@@ -56,12 +57,15 @@ async def test_enrichment_logic():
         print(f"  Markdown Preview: {repr(chunk.chunk_markdown[:80])}...")
 
     # Assertions
-    # 1. Title tracking
-    assert "Header: Chapter 1: The Beginning" in enriched[1].context
+    # 1. Title tracking (now uses breadcrumbs without 'Header:' prefix)
+    assert "Chapter 1: The Beginning" in enriched[1].context
     # 2. Table Merging (Caption + Table -> 1 chunk)
     table_chunk = next(c for c in enriched if c.grounding.chunk_type == "table")
     assert "Caption: Table 1: Characters" in table_chunk.context
     assert "Table 1: Characters" in table_chunk.chunk_markdown
+    
+    # 3. Dynamic Context Injection into Markdown
+    assert "[Context: Chapter 1: The Beginning]" in enriched[1].chunk_markdown
     
     print("\n[SUCCESS] Ingestor enrichment logic verified.")
 

@@ -84,7 +84,7 @@ _ingestion_mcp = MCPToolset(
             command="uv",
             args=["run", "python", str(_SERVER_PATH)],
         ),
-        timeout=120,
+        timeout=300,
     ),
     tool_filter=[
         "ingest",
@@ -128,10 +128,10 @@ ingestion_agent = LlmAgent(
     description=(
         "Versioned Merkle-tree document ingestion sub-agent. Stores parsed "
         "Document objects (from document_parser_agent) into Qdrant with "
-        "Redis-backed integrity proofs. Supports idempotent re-ingestion, "
-        "point-in-time version pinning, Merkle integrity auditing, Redis "
-        "state recovery, and permanent document purge. Call after parsing, "
-        "before reranking."
+        "Redis-backed integrity proofs and hierarchical context breadcrumbs. "
+        "Supports idempotent re-ingestion, point-in-time version pinning, "
+        "Merkle integrity auditing, and permanent document purge. "
+        "Call after parsing, before reranking."
     ),
     model="gemini-3-flash-preview",  # swap to _model for local Ollama dev
     static_instruction=_STATIC_INSTRUCTION,  # cached — do not put state here

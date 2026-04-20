@@ -458,12 +458,18 @@ class AsyncMerkleQdrantIngestor:
         """
         
         try:
-            # Use the specified preview model
-            response = await litellm.acompletion(
-                model="gemini/gemini-3.1-flash-lite-preview",
-                messages=[{"role": "user", "content": prompt}],
-                timeout=30.0,
-            )
+            # Use the specified preview model with retries for rate limits
+            import sys
+            from contextlib import redirect_stdout
+
+            # Redirect any library-level prints to stderr during the LLM call
+            with redirect_stdout(sys.stderr):
+                response = await litellm.acompletion(
+                    model="gemini/gemini-3.1-flash-lite-preview",
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=30.0,
+                    num_retries=3, # Handle RESOURCE_EXHAUSTED / ServiceUnavailable
+                )
             summary = response.choices[0].message.content.strip()
             
             # --- Cache Update ---
@@ -496,10 +502,21 @@ class AsyncMerkleQdrantIngestor:
             # Replace tags with spaces to avoid merging words
             return re.sub(r'<[^>]+>', ' ', text).strip()
 
-        # Robust Label Categories
-        HEADER_LABELS = {"document_title", "paragraph_title", "title", "section_title", "figure_title"}
-        CAPTION_LABELS = {"table_caption", "figure_caption", "caption"}
-        DATA_LABELS = {"table", "figure", "image", "algorithm", "formula"}
+        # Robust Label Categories (aligned with DocumentParser)
+        HEADER_LABELS = {
+            "document_title", "title", "section_title", "section_header", 
+            "paragraph_title"
+        }
+        CAPTION_LABELS = {
+            "table_caption", "figure_caption", "caption", "figure_title",
+            "table_title", "chart_title", "image_caption"
+        }
+        DATA_LABELS = {
+            "table", "figure", "image", "chart", "algorithm", "formula", 
+            "seal", "text", "plain_text", "paragraph", "list",
+            "abstract", "table_of_contents", "references", "footnotes", 
+            "vision_footnote", "aside_text", "reference_content"
+        }
         
         enriched_chunks = []
         stack = header_stack or HeaderStack()
@@ -522,10 +539,13 @@ class AsyncMerkleQdrantIngestor:
             
             if label in CAPTION_LABELS:
                 if pending_caption:
-                    # Emit previous unmerged caption
+                    # Flush previous unmerged caption
+                    breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
+                    # Context Injection
+                    full_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
                     enriched_chunks.append(Chunk(
-                        chunk_markdown=pending_caption,
-                        context=stack.format_breadcrumb() if use_deep_context else "",
+                        chunk_markdown=full_md,
+                        context=breadcrumb,
                         grounding=Grounding(
                             chunk_type="caption",
                             bbox=pending_caption_bbox,
@@ -540,20 +560,23 @@ class AsyncMerkleQdrantIngestor:
             
             # --- Context Injection & Merging ---
             chunk_markdown = content
-            context_str = stack.format_breadcrumb() if use_deep_context else ""
+            breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
+            context_parts = []
+            if breadcrumb:
+                context_parts.append(breadcrumb)
             
             # We merge captions specifically into 'data' blocks
             is_table = label == "table" or "<table>" in chunk_markdown.lower()
             if pending_caption and (label in DATA_LABELS or is_table):
                 chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
-                # Append caption to context for these blocks
-                context_str = f"{context_str} | Caption: {pending_caption}" if context_str else f"Caption: {pending_caption}"
+                context_parts.append(f"Caption: {pending_caption}")
                 pending_caption = "" 
             elif pending_caption:
-                # Flush pending caption if next block is not a merge target
+                # Flush pending caption
+                standalone_caption_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
                 enriched_chunks.append(Chunk(
-                    chunk_markdown=pending_caption,
-                    context=stack.format_breadcrumb() if use_deep_context else "",
+                    chunk_markdown=standalone_caption_md,
+                    context=breadcrumb,
                     grounding=Grounding(
                         chunk_type="caption",
                         bbox=pending_caption_bbox,
@@ -563,27 +586,39 @@ class AsyncMerkleQdrantIngestor:
                 ))
                 pending_caption = ""
 
-            # --- Table Content Flattening ---
+            # Table Content Flattening (Improved Retrieval for HTML Tables)
             if is_table:
                 flattened = strip_html_table(chunk_markdown)
                 if len(flattened) < len(chunk_markdown):
                      chunk_markdown = f"{flattened}\n\n{chunk_markdown}"
 
-            if context_str and label not in HEADER_LABELS:
-                full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}"
+            # Final Context String
+            context_str = " | ".join(context_parts) if context_parts else ""
+            
+            # Dynamic Context Injection into Markdown
+            if breadcrumb and label not in HEADER_LABELS:
+                full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}" if context_str else chunk_markdown
             else:
                 full_markdown = chunk_markdown
 
             enriched_chunks.append(Chunk(
                 chunk_markdown=full_markdown,
                 context=context_str,
-                grounding=chunk.grounding
+                grounding=Grounding(
+                    chunk_type=raw_label,
+                    bbox=chunk.grounding.bbox,
+                    page_index=chunk.grounding.page_index,
+                    score=chunk.grounding.score
+                )
             ))
             
+        # Final cleanup for pending captions at the end of the sequence
         if pending_caption:
+             breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
+             full_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
              enriched_chunks.append(Chunk(
-                chunk_markdown=pending_caption,
-                context=stack.format_breadcrumb() if use_deep_context else "",
+                chunk_markdown=full_md,
+                context=breadcrumb,
                 grounding=Grounding(
                     chunk_type="caption",
                     bbox=pending_caption_bbox,

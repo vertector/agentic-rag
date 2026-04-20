@@ -105,6 +105,17 @@ def build_instruction(context: "InvocationContext") -> str:
             "explicitly specifies a different name."
         )
 
+    # ── Hierarchical Context State
+    if state.get("ingestor:header_state"):
+        raw_stack = state["ingestor:header_state"]
+        # Extract titles from (level, title) tuples if needed
+        titles = [h[1] if isinstance(h, (list, tuple)) and len(h) == 2 else str(h) for h in raw_stack]
+        hierarchy = " > ".join(titles)
+        augments.append(
+            f"ACTIVE HIERARCHY: {hierarchy}. This is your current semantic "
+            "location in the document. All new chunks will inherit this path."
+        )
+
     # ── Escalation lockout
     if state.get("ingestor:escalation_pending"):
         augments.append(

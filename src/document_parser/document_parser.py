@@ -350,17 +350,23 @@ class DocumentParser:
         ignored = set(self._settings.markdown_ignore_labels or [])
         chunks = []
         
-        current_header = ""
         pending_caption = ""
         pending_caption_bbox = [0, 0, 0, 0]
         
-        # Robust Label Categories
-        HEADER_LABELS = {"document_title", "paragraph_title", "figure_title", "title"}
-        CAPTION_LABELS = {"table_caption", "figure_caption", "caption"}
+        # Robust Label Categories based on PaddleOCR-VL / PP-DocLayoutV2
+        HEADER_LABELS = {
+            "document_title", "title", "section_title", "section_header", 
+            "paragraph_title"
+        }
+        CAPTION_LABELS = {
+            "table_caption", "figure_caption", "caption", "figure_title",
+            "table_title", "chart_title", "image_caption"
+        }
         DATA_LABELS = {
-            "table", "figure", "image", "algorithm", "formula", "text", 
+            "table", "figure", "image", "chart", "algorithm", "formula", 
+            "seal", "text", "plain_text", "paragraph", "list",
             "abstract", "table_of_contents", "references", "footnotes", 
-            "vision_footnote", "aside_text", "paragraph"
+            "vision_footnote", "aside_text", "reference_content"
         }
 
         parsing_res = json_data.get("parsing_res_list", [])
@@ -379,17 +385,12 @@ class DocumentParser:
             bbox = block.get("block_bbox", [0, 0, 0, 0])
             score = layout_item.get("score", 1.0) if isinstance(layout_item, dict) else 1.0
 
-            # --- State Tracking ---
-            if label in HEADER_LABELS:
-                current_header = content
-                # We still keep headers as standalone chunks for structure
-            
             if label in CAPTION_LABELS:
                 # If we already had a pending caption that was never merged, emit it now
                 if pending_caption:
                     chunks.append(Chunk(
                         chunk_markdown=pending_caption,
-                        context=f"Header: {current_header}" if current_header else "",
+                        context="",
                         grounding=Grounding(
                             chunk_type="caption",
                             bbox=pending_caption_bbox,
@@ -401,25 +402,22 @@ class DocumentParser:
                 pending_caption_bbox = bbox
                 continue # Do not add as standalone chunk yet; wait to merge
             
-            # --- Context Injection & Merging ---
+            # --- Local Merging (Captions -> Data Blocks) ---
             chunk_markdown = content
-            context_parts = []
-            
-            if current_header:
-                context_parts.append(f"Header: {current_header}")
+            context_str = ""
             
             # We merge captions specifically into 'data' blocks like tables/figures/images
-            if pending_caption and label in ("table", "figure", "image", "algorithm", "formula"):
-                # Merge caption into the data block
+            if pending_caption and label in ("table", "figure", "image", "chart", "algorithm", "formula"):
+                # Merge caption into the data block (Markdown-style)
                 chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
-                context_parts.append(f"Caption: {pending_caption}")
+                context_str = f"Caption: {pending_caption}"
                 pending_caption = "" # Reset
             elif pending_caption:
                 # If we have a caption but the next block isn't a data block, 
                 # emit the caption as its own chunk so it's not lost.
                 chunks.append(Chunk(
                     chunk_markdown=pending_caption,
-                    context=f"Header: {current_header}" if current_header else "",
+                    context="",
                     grounding=Grounding(
                         chunk_type="caption",
                         bbox=pending_caption_bbox,
@@ -429,17 +427,11 @@ class DocumentParser:
                 ))
                 pending_caption = ""
 
-            # Prepend context to markdown for better embedding matches
-            context_str = " | ".join(context_parts) if context_parts else ""
-            
-            # Don't prepend context to the header itself to avoid redundancy
-            if context_str and label not in HEADER_LABELS:
-                full_markdown = f"[Context: {context_str}]\n\n{chunk_markdown}"
-            else:
-                full_markdown = chunk_markdown
-
+            # DocumentParser now produces "Pristine Chunks".
+            # No context prefixes ([Context: ...]) are added here; 
+            # IngestionPipeline will handle dynamic context injection.
             chunks.append(Chunk(
-                chunk_markdown=full_markdown,
+                chunk_markdown=chunk_markdown,
                 context=context_str,
                 grounding=Grounding(
                     chunk_type=raw_label, # Keep original label for metadata
@@ -453,7 +445,7 @@ class DocumentParser:
         if pending_caption:
              chunks.append(Chunk(
                 chunk_markdown=pending_caption,
-                context=f"Header: {current_header}" if current_header else "",
+                context="",
                 grounding=Grounding(
                     chunk_type="caption",
                     bbox=pending_caption_bbox,

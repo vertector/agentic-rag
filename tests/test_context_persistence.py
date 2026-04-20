@@ -1,10 +1,12 @@
 
+import pytest
 import asyncio
 import logging
 import uuid
 from shared.schemas import Document, Metadata, Chunk, Grounding
 from ingestion_pipeline.ingestion_pipeline import AsyncMerkleQdrantIngestor
 
+@pytest.mark.anyio
 async def test_hierarchical_context_persistence():
     logging.basicConfig(level=logging.INFO)
     ingestor = AsyncMerkleQdrantIngestor(
@@ -96,7 +98,7 @@ async def test_hierarchical_context_persistence():
     print(f"    Final State P3: {state3}")
     
     # Breadcrumb should ONLY contain '2 Conclusion'
-    assert state3 == ["2 Conclusion"], f"HeaderStack did not reset! Got: {state3}"
+    assert state3 == [(0, "2 Conclusion")], f"HeaderStack did not reset! Got: {state3}"
     print("    [SUCCESS] Level 0 reset verified.")
 
     print("\n[ALL TESTS PASSED]")

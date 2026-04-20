@@ -112,6 +112,23 @@ async def before_tool_callback(
             args["category"] = active_cat
             logger.info("[INGESTOR] Auto-injected category=%s into %s", active_cat, tool_name)
 
+    # ── Auto-inject initial_header_state for same-file ingestion
+    if tool_name == "ingest":
+        last_file = state.get("ingestor:last_ingested_file")
+        current_path = args.get("file_path")
+        current_file = Path(current_path).name if current_path else "inline"
+
+        if last_file == current_file:
+            header_state = state.get("ingestor:header_state")
+            if header_state and not args.get("initial_header_state"):
+                args["initial_header_state"] = header_state
+                logger.info("[INGESTOR] Auto-injected header_state (size=%d) into ingest", len(header_state))
+        else:
+            # Different file or first time — ensure we don't carry over stale hierarchy
+            if "ingestor:header_state" in state:
+                logger.info("[INGESTOR] Resetting header_state for new file: %s", current_file)
+                del state["ingestor:header_state"]
+
     # ── Auto-inject version_root for search (flat signature)
     if tool_name == "search":
         v_root = state.get("ingestor:version_root")
@@ -172,6 +189,7 @@ async def after_tool_callback(
         skipped = parsed.get("skipped", 0)
         errors = parsed.get("errors", [])
         collection = parsed.get("collection", "")
+        header_state = parsed.get("header_state", [])
 
         # Best-effort filename extraction from args (flat signature)
         file_path = args.get("file_path", "")
@@ -181,6 +199,7 @@ async def after_tool_callback(
         state["ingestor:connected"] = True
         state["ingestor:last_ingested_file"] = filename
         state["ingestor:last_ingest_summary"] = json.dumps(parsed)
+        state["ingestor:header_state"] = header_state
 
         log: list = state.get("ingestor:session_ingest_log", [])
         log.append({"file": filename, "ingested": ingested, "skipped": skipped, "errors": len(errors)})
