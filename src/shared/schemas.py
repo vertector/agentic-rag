@@ -323,8 +323,8 @@ class PipelineSettings(_Base):
         description="Format extracted block content with proper structure",
     )
     merge_layout_blocks: bool = Field(
-        default=True,
-        description="Merge adjacent layout blocks of the same type",
+        default=False,
+        description="Merge adjacent layout blocks of the same type. Disabled by default for granular visualization.",
     )
     merge_tables: bool = Field(
         default=True,
@@ -345,6 +345,10 @@ class PipelineSettings(_Base):
     pipeline_version: Literal["v1", "v1.5"] = Field(
         default="v1.5",
         description="Version of the PaddleOCR-VL pipeline to use",
+    )
+    parser_logic_version: int = Field(
+        default=2,
+        description="Internal version of the parsing logic. Increment to bust the cache.",
     )
 
     # ── Backend config ────────────────────────────────────────────────────────

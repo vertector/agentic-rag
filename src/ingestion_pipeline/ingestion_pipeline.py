@@ -509,21 +509,19 @@ class AsyncMerkleQdrantIngestor:
         }
         CAPTION_LABELS = {
             "table_caption", "figure_caption", "caption", "figure_title",
-            "table_title", "chart_title", "image_caption"
+            "table_title", "chart_title", "image_caption", "vision_footnote"
         }
         DATA_LABELS = {
             "table", "figure", "image", "chart", "algorithm", "formula", 
             "seal", "text", "plain_text", "paragraph", "list",
             "abstract", "table_of_contents", "references", "footnotes", 
-            "vision_footnote", "aside_text", "reference_content"
+            "aside_text", "reference_content"
         }
         
         enriched_chunks = []
         stack = header_stack or HeaderStack()
         
         pending_caption = ""
-        pending_caption_bbox = [0, 0, 0, 0]
-        pending_caption_score = 1.0
 
         for chunk in chunks:
             raw_label = chunk.grounding.chunk_type or "unknown"
@@ -537,53 +535,41 @@ class AsyncMerkleQdrantIngestor:
                 stack.push(level, content)
                 # Headers stay standalone
             
-            if label in CAPTION_LABELS:
-                if pending_caption:
-                    # Flush previous unmerged caption
-                    breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
-                    # Context Injection
-                    full_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
-                    enriched_chunks.append(Chunk(
-                        chunk_markdown=full_md,
-                        context=breadcrumb,
-                        grounding=Grounding(
-                            chunk_type="caption",
-                            bbox=pending_caption_bbox,
-                            page_index=chunk.grounding.page_index,
-                            score=pending_caption_score
-                        )
-                    ))
-                pending_caption = content
-                pending_caption_bbox = chunk.grounding.bbox
-                pending_caption_score = chunk.grounding.score
-                continue # Buffer for potential merge
-            
-            # --- Context Injection & Merging ---
+            # --- Context Injection & Merging Logic ---
             chunk_markdown = content
             breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
             context_parts = []
             if breadcrumb:
                 context_parts.append(breadcrumb)
             
-            # We merge captions specifically into 'data' blocks
+            # 1. Identify Caption Chunks
+            if label in CAPTION_LABELS:
+                # Store caption text to enrich the NEXT data block
+                pending_caption = content
+                
+                # Emit the caption as its OWN chunk (crucial for visualizer)
+                # It gets the current breadcrumb context.
+                caption_context = breadcrumb
+                caption_md = f"[Context: {caption_context}]\n\n{content}" if caption_context else content
+                
+                enriched_chunks.append(Chunk(
+                    chunk_markdown=caption_md,
+                    context=caption_context,
+                    grounding=chunk.grounding
+                ))
+                continue # We've emitted the caption; don't process it as a regular chunk
+
+            # 2. Enrich Data Blocks (Tables, Figures, etc.)
             is_table = label == "table" or "<table>" in chunk_markdown.lower()
             if pending_caption and (label in DATA_LABELS or is_table):
-                chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
+                # Add caption text to the context metadata for semantic retrieval.
                 context_parts.append(f"Caption: {pending_caption}")
-                pending_caption = "" 
-            elif pending_caption:
-                # Flush pending caption
-                standalone_caption_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
-                enriched_chunks.append(Chunk(
-                    chunk_markdown=standalone_caption_md,
-                    context=breadcrumb,
-                    grounding=Grounding(
-                        chunk_type="caption",
-                        bbox=pending_caption_bbox,
-                        page_index=chunk.grounding.page_index,
-                        score=pending_caption_score
-                    )
-                ))
+                # Prepend caption to markdown so the data block can be found by caption queries.
+                chunk_markdown = f"{pending_caption}\n\n{chunk_markdown}"
+                pending_caption = "" # Reset after use
+            else:
+                # If a caption was followed by something that isn't a data block,
+                # we just clear it (it was already emitted as its own chunk).
                 pending_caption = ""
 
             # Table Content Flattening (Improved Retrieval for HTML Tables)
@@ -604,27 +590,7 @@ class AsyncMerkleQdrantIngestor:
             enriched_chunks.append(Chunk(
                 chunk_markdown=full_markdown,
                 context=context_str,
-                grounding=Grounding(
-                    chunk_type=raw_label,
-                    bbox=chunk.grounding.bbox,
-                    page_index=chunk.grounding.page_index,
-                    score=chunk.grounding.score
-                )
-            ))
-            
-        # Final cleanup for pending captions at the end of the sequence
-        if pending_caption:
-             breadcrumb = stack.format_breadcrumb() if use_deep_context else ""
-             full_md = f"[Context: {breadcrumb}]\n\n{pending_caption}" if breadcrumb else pending_caption
-             enriched_chunks.append(Chunk(
-                chunk_markdown=full_md,
-                context=breadcrumb,
-                grounding=Grounding(
-                    chunk_type="caption",
-                    bbox=pending_caption_bbox,
-                    page_index=chunks[0].grounding.page_index if chunks else 1,
-                    score=pending_caption_score
-                )
+                grounding=chunk.grounding
             ))
             
         return enriched_chunks, stack
