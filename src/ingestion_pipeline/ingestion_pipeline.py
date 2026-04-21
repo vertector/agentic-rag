@@ -193,8 +193,12 @@ class AsyncMerkleQdrantIngestor:
 
         self._init_encoder()
 
-        self.model_id = self.model_name.replace("/", "-").lower()
+        self.model_id = self.model_id = self.model_name.replace("/", "-").lower()
         self.collection_name = f"{collection_base_name}_{self.model_id}"
+        
+        # --- Performance Tuning ---
+        # Limit concurrent LLM calls to prevent rate limit (429) errors
+        self._llm_semaphore = asyncio.Semaphore(5)
 
     # ------------------------------------------------------------------
     # Setup
@@ -433,6 +437,13 @@ class AsyncMerkleQdrantIngestor:
         # Only summarize data-heavy blocks
         if label not in ("table", "chart", "figure", "image") and "<table>" not in content.lower():
             return None
+            
+        # --- Triviality Check ---
+        # Don't summarize tiny tables (e.g. < 4 rows and short content)
+        row_count = content.count("\n")
+        if row_count < 5 and len(content) < 150:
+            logger.debug("Skipping summary for trivial %s chunk.", label)
+            return None
 
         # --- Cache Lookup ---
         structural_hash = chunk.get_structural_hash()
@@ -446,31 +457,61 @@ class AsyncMerkleQdrantIngestor:
         except Exception as exc:
             logger.warning("Redis cache lookup failed: %s", exc)
 
+        # --- Prompt Construction (Optimized for Prefix Caching) ---
+        # Static instructions are placed at the TOP. 
+        # Dynamic content (Context, Content) is at the BOTTOM.
         prompt = f"""
-        Summarize the following {label} from a document. 
-        Focus on the key insights, trends, and data points that would be useful for semantic search.
-        Keep the summary concise but informative (max 3 sentences).
+        You are the **Expert Semantic Ingestion Analyst**. Your task is to transform raw data into a high-density "Semantic Index" that bridges the gap between keyword search, analytical reasoning, and complex calculations.
+
+        ### INSTRUCTIONS
+        Generate a structured, technical summary optimized for a RAG (Retrieval-Augmented Generation) pipeline. Follow these steps:
+
+        1. **Semantic Bridge**: Identify the core purpose of this data relative to its section. How does it prove or illustrate the points made in the provided context?
+        2. **Schema Extraction**: Map the schema. List headers, primary entities (rows), and units of measure (e.g., currency, percentages, timeframes). Explicitly note if the data is a time-series or a cross-sectional comparison.
+        3. **Quantitative Fact-Checking**: 
+           - Extract the "Extremes": Identify the highest, lowest, and most recent values.
+           - Summarize Aggregates: State the total, average, or median if explicitly provided or easily derivable.
+           - Trend Detection: Describe the direction of change (e.g., "Increasing since 2022", "Sharp drop in June").
+        4. **Reasoning Synthesis**: Predict the "Reasoning Path." Provide two hypothetical questions this data can answer—one requiring a specific value lookup and one requiring a logical deduction or calculation.
+
+        ### CONSTRAINTS
+        - **Stay Grounded**: Do not hallucinate data points not present in the markdown.
+        - **Terminology**: Use the exact terminology found in the headers to maximize keyword overlap.
+        - **Brevity**: Maximum 150 words. No conversational filler (e.g., "This table shows..."). Start directly with the analysis.
+
+        ### EXAMPLE OUTPUT
+        **Context**: Support for Q3 Revenue Growth.
+        **Schema**: Headers [Region, Revenue (USD M), Growth %]. Units: USD Millions.
+        **Analysis**: Total revenue $145M. Extreme: North America ($80M) is the primary driver, while EMEA showed a -5% contraction.
+        **Reasoning**: Answers "Which region is dragging down growth?" and "Calculate total revenue excluding NA."
+
+        --- START OF DYNAMIC CONTENT ---
         
-        Context: {chunk.context}
+        ### TARGET TYPE: {label}
         
-        Content:
+        ### CONTEXTUAL GROUNDING
+        Hierarchy: [{chunk.context}]
+
+        ### DATA CONTENT (Markdown)
         {content}
         """
         
         try:
-            # Use the specified preview model with retries for rate limits
-            import sys
-            from contextlib import redirect_stdout
+            # Use semaphore to limit concurrency and prevent 429s
+            async with self._llm_semaphore:
+                # Use the specified preview model with retries for rate limits
+                import sys
+                from contextlib import redirect_stdout
 
-            # Redirect any library-level prints to stderr during the LLM call
-            with redirect_stdout(sys.stderr):
-                response = await litellm.acompletion(
-                    model="gemini/gemini-3.1-flash-lite-preview",
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=30.0,
-                    num_retries=3, # Handle RESOURCE_EXHAUSTED / ServiceUnavailable
-                )
-            summary = response.choices[0].message.content.strip()
+                # Redirect any library-level prints to stderr during the LLM call
+                with redirect_stdout(sys.stderr):
+                    response = await litellm.acompletion(
+                        model="gemini/gemini-3.1-flash-lite-preview",
+                        messages=[{"role": "user", "content": prompt}],
+                        timeout=30.0,
+                        num_retries=3, # Handle RESOURCE_EXHAUSTED / ServiceUnavailable
+                    )
+                summary = response.choices[0].message.content.strip()
             
             # --- Cache Update ---
             if summary:
