@@ -98,7 +98,8 @@ def before_model_callback(
                 logger.info("[ORCH] Auto-extracted active_version: %s", version_matches[0])
             elif "current" in user_text.lower() or "latest" in user_text.lower() or "active version" in user_text.lower():
                 # Explicitly clear version pin if user asks for latest
-                state.pop("orchestrator:active_version", None)
+                if "orchestrator:active_version" in state:
+                    del state["orchestrator:active_version"]
                 logger.info("[ORCH] Cleared active_version pin")
 
     # 2. Derive parser_output_path from sub-agent output or disk discovery
@@ -200,8 +201,10 @@ def after_model_callback(
 
     # After purge confirmed + delegated: clear pending_purge
     if state.get("ingestor:purge_confirmed") is True and state.get("orchestrator:pending_purge"):
-        if "ingestor:purge_confirmed" not in state:
-            state.pop("orchestrator:pending_purge", None)
+        # The condition below was 'not in state', which was logically impossible here.
+        # Changed to simply check if the key exists before deleting.
+        if "orchestrator:pending_purge" in state:
+            del state["orchestrator:pending_purge"]
             logger.info("[ORCH] Cleared orchestrator:pending_purge after successful purge delegation")
 
     if '"escalate": true' in text or '"escalate":true' in text:
