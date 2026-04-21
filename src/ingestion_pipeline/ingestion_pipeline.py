@@ -144,7 +144,38 @@ async def _scroll_all(
 
 
 # ---------------------------------------------------------------------------
-# 5. Core Ingestor
+# 5. Constants & Config
+# ---------------------------------------------------------------------------
+
+SUMMARIZATION_SYSTEM_PROMPT = """
+You are the **Expert Semantic Ingestion Analyst**. Your task is to transform raw data into a high-density "Semantic Index" that bridges the gap between keyword search, analytical reasoning, and complex calculations.
+
+### INSTRUCTIONS
+Generate a structured, technical summary optimized for a RAG (Retrieval-Augmented Generation) pipeline. Follow these steps:
+
+1. **Semantic Bridge**: Identify the core purpose of this data relative to its section. How does it prove or illustrate the points made in the provided context?
+2. **Schema Extraction**: Map the schema. List headers, primary entities (rows), and units of measure (e.g., currency, percentages, timeframes). Explicitly note if the data is a time-series or a cross-sectional comparison.
+3. **Quantitative Fact-Checking**: 
+   - Extract the "Extremes": Identify the highest, lowest, and most recent values.
+   - Summarize Aggregates: State the total, average, or median if explicitly provided or easily derivable.
+   - Trend Detection: Describe the direction of change (e.g., "Increasing since 2022", "Sharp drop in June").
+4. **Reasoning Synthesis**: Predict the "Reasoning Path." Provide two hypothetical questions this data can answer—one requiring a specific value lookup and one requiring a logical deduction or calculation.
+
+### CONSTRAINTS
+- **Stay Grounded**: Do not hallucinate data points not present in the markdown.
+- **Terminology**: Use the exact terminology found in the headers to maximize keyword overlap.
+- **Brevity**: Maximum 150 words. No conversational filler (e.g., "This table shows..."). Start directly with the analysis.
+
+### EXAMPLE OUTPUT
+**Context**: Support for Q3 Revenue Growth.
+**Schema**: Headers [Region, Revenue (USD M), Growth %]. Units: USD Millions.
+**Analysis**: Total revenue $145M. Extreme: North America ($80M) is the primary driver, while EMEA showed a -5% contraction.
+**Reasoning**: Answers "Which region is dragging down growth?" and "Calculate total revenue excluding NA."
+""".strip()
+
+
+# ---------------------------------------------------------------------------
+# 6. Core Ingestor
 # ---------------------------------------------------------------------------
 
 class AsyncMerkleQdrantIngestor:
@@ -458,33 +489,9 @@ class AsyncMerkleQdrantIngestor:
             logger.warning("Redis cache lookup failed: %s", exc)
 
         # --- Prompt Construction (Optimized for Prefix Caching) ---
-        # Static instructions are placed at the TOP. 
-        # Dynamic content (Context, Content) is at the BOTTOM.
-        prompt = f"""
-        You are the **Expert Semantic Ingestion Analyst**. Your task is to transform raw data into a high-density "Semantic Index" that bridges the gap between keyword search, analytical reasoning, and complex calculations.
-
-        ### INSTRUCTIONS
-        Generate a structured, technical summary optimized for a RAG (Retrieval-Augmented Generation) pipeline. Follow these steps:
-
-        1. **Semantic Bridge**: Identify the core purpose of this data relative to its section. How does it prove or illustrate the points made in the provided context?
-        2. **Schema Extraction**: Map the schema. List headers, primary entities (rows), and units of measure (e.g., currency, percentages, timeframes). Explicitly note if the data is a time-series or a cross-sectional comparison.
-        3. **Quantitative Fact-Checking**: 
-           - Extract the "Extremes": Identify the highest, lowest, and most recent values.
-           - Summarize Aggregates: State the total, average, or median if explicitly provided or easily derivable.
-           - Trend Detection: Describe the direction of change (e.g., "Increasing since 2022", "Sharp drop in June").
-        4. **Reasoning Synthesis**: Predict the "Reasoning Path." Provide two hypothetical questions this data can answer—one requiring a specific value lookup and one requiring a logical deduction or calculation.
-
-        ### CONSTRAINTS
-        - **Stay Grounded**: Do not hallucinate data points not present in the markdown.
-        - **Terminology**: Use the exact terminology found in the headers to maximize keyword overlap.
-        - **Brevity**: Maximum 150 words. No conversational filler (e.g., "This table shows..."). Start directly with the analysis.
-
-        ### EXAMPLE OUTPUT
-        **Context**: Support for Q3 Revenue Growth.
-        **Schema**: Headers [Region, Revenue (USD M), Growth %]. Units: USD Millions.
-        **Analysis**: Total revenue $145M. Extreme: North America ($80M) is the primary driver, while EMEA showed a -5% contraction.
-        **Reasoning**: Answers "Which region is dragging down growth?" and "Calculate total revenue excluding NA."
-
+        # The static part (instructions, persona, examples) is passed as a SYSTEM message.
+        # Gemini caches the system message prefix automatically.
+        user_message = f"""
         --- START OF DYNAMIC CONTENT ---
         
         ### TARGET TYPE: {label}
@@ -494,7 +501,7 @@ class AsyncMerkleQdrantIngestor:
 
         ### DATA CONTENT (Markdown)
         {content}
-        """
+        """.strip()
         
         try:
             # Use semaphore to limit concurrency and prevent 429s
@@ -507,7 +514,10 @@ class AsyncMerkleQdrantIngestor:
                 with redirect_stdout(sys.stderr):
                     response = await litellm.acompletion(
                         model="gemini/gemini-3.1-flash-lite-preview",
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=[
+                            {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_message}
+                        ],
                         timeout=30.0,
                         num_retries=3, # Handle RESOURCE_EXHAUSTED / ServiceUnavailable
                     )
