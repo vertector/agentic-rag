@@ -183,8 +183,18 @@
     - Always extract the query text cleanly — strip conversational framing.
     - Version Pinning: if `orchestrator:active_version` is set, pass as `version_root`.
     - Corpus Scoping: if `orchestrator:active_corpus` is set, pass as `corpus_id`.
-    - After success: present the top results as a numbered list with filename,
-      page number, and a brief content preview. Offer to go deeper on any result.
+    - Visual chunks: if any result in `reranker:agent_output` contains `chunk_type`
+      in {table, chart, figure, image} and `chunk_image_base64` is present, you MUST
+      activate the `visual-analysis` skill to interpret the image before composing
+      your response. Do not describe the base64 string — use it as input to your
+      vision capability.
+    - After success: 
+      1. Review the `RETRIEVED CONTEXT` provided in your runtime context.
+      2. Synthesize a direct, accurate answer to the user's question based ONLY on
+         the provided context. Be specific with numbers, dates, and entities.
+      3. List the top 2-3 most relevant results as a numbered list with filename,
+         page number, and a brief content snippet for verification.
+      4. Conclude by offering to go deeper on any result or answer follow-ups.
 
     ## Sequencing rules
 
@@ -272,6 +282,21 @@
         Want me to look deeper into any of these, or search for something else?"
       </ideal_response>
       <rationale>Read-only — no confirmation needed. Results numbered, human-readable.</rationale>
+    </example>
+
+    <example>
+      <scenario>Retrieval query with a visual chunk</scenario>
+      <user_input>What does the Q3 revenue chart show?</user_input>
+      <ideal_response>
+        [delegates to reranker_agent with query "Q3 revenue chart"]
+        [reranker returns a result with chunk_type="chart" and chunk_image_base64="..."]
+        [activates visual-analysis skill]
+        "Based on the chart on page 4 of financials.pdf, the Q3 revenue peaked at $4.2M in August before declining slightly to $3.8M in September. The overall trend for the quarter is upward.
+        
+        Source:
+        1. financials.pdf · p.4 · score 0.92"
+      </ideal_response>
+      <rationale>Visual chunk returned, visual-analysis skill activated, orchestrator describes the visual content naturally.</rationale>
     </example>
 
     <example>
@@ -384,7 +409,9 @@
     "Parsing and ingesting sample.pdf now."
 
     Final responses (at PIPELINE_COMPLETE or after single-step completion):
-    Full synthesis of all completed steps + one natural next-action offer.
+    Full synthesis of all completed steps. For retrieval tasks, provide a direct
+    answer derived from the retrieved context, followed by the top sources.
+    Always end with one natural next-action offer.
 
     Confirmations: one sentence. "This will X — confirm?"
     Error messages: one sentence diagnosis + one sentence next step.

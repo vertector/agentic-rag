@@ -600,3 +600,85 @@ class Corpus(_Base):
         sorted_docs = sorted(self.documents.items(), key=lambda x: x[0])
         doc_roots = [snap.merkle_root for _, snap in sorted_docs]
         return build_merkle_tree(doc_roots)
+
+
+# ---------------------------------------------------------------------------
+# Visual chunk support
+# ---------------------------------------------------------------------------
+
+VISUAL_CHUNK_TYPES: frozenset = frozenset({"table", "chart", "figure", "image"})
+"""
+Layout block types whose rendered region is stored as a JPEG crop in Qdrant.
+
+Only chunk_types in this set receive a ``chunk_image_base64`` payload field
+during ingestion.  Text-only chunk types (``paragraph``, ``title``, etc.) are
+excluded to keep Qdrant payload size manageable.
+
+Kept as a frozenset so membership tests are O(1) and the value is hashable /
+safe to use in sets.
+"""
+
+
+def crop_chunk_image(
+    page_b64: str,
+    bbox: list,
+    quality: int = 85,
+) -> "str | None":
+    """Crop a visual chunk region from a base64-encoded page image.
+
+    Decodes *page_b64* (PNG produced by the document parser), crops the
+    rectangle described by *bbox* ``[x1, y1, x2, y2]`` in pixel space,
+    re-encodes the crop as a JPEG at the given *quality*, and returns the
+    result as a base64 string.
+
+    Returns ``None`` — never raises — when:
+    - *page_b64* is empty or not valid base64 / image data.
+    - *bbox* is empty, wrong length, or the coordinates fall entirely
+      outside the image dimensions.
+    - Pillow (PIL) is not installed.
+
+    Callers should treat ``None`` as "no image available" and fall back to
+    the text ``content`` / ``summary`` fields.
+
+    Args:
+        page_b64: Base64-encoded PNG of the full rendered document page.
+        bbox:     Bounding box as ``[x1, y1, x2, y2]`` in pixel coordinates.
+        quality:  JPEG compression quality (1–95).  85 gives ~4× size
+                  reduction vs PNG with negligible visual loss for charts
+                  and tables.
+
+    Returns:
+        Base64-encoded JPEG string of the cropped region, or ``None``.
+    """
+    if not page_b64 or not bbox or len(bbox) != 4:
+        return None
+
+    try:
+        import base64 as _base64
+        import io as _io
+        from PIL import Image as _Image
+
+        # Decode the full-page PNG
+        raw = _base64.b64decode(page_b64)
+        page_img = _Image.open(_io.BytesIO(raw)).convert("RGB")
+
+        img_w, img_h = page_img.size
+        x1, y1, x2, y2 = (int(v) for v in bbox)
+
+        # Clamp to image bounds; reject degenerate boxes
+        x1 = max(0, min(x1, img_w))
+        y1 = max(0, min(y1, img_h))
+        x2 = max(0, min(x2, img_w))
+        y2 = max(0, min(y2, img_h))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        crop = page_img.crop((x1, y1, x2, y2))
+
+        buf = _io.BytesIO()
+        crop.save(buf, format="JPEG", quality=quality, optimize=True)
+        return _base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    except Exception:
+        return None

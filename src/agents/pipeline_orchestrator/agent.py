@@ -68,7 +68,8 @@ _model = LiteLlm(
 # ---------------------------------------------------------------------------
 
 _intent_routing_skill = load_skill_from_dir(_SKILLS_DIR / "intent-routing")
-_skill_toolset = skill_toolset.SkillToolset(skills=[_intent_routing_skill])
+_visual_analysis_skill = load_skill_from_dir(_SKILLS_DIR / "visual-analysis")
+_skill_toolset = skill_toolset.SkillToolset(skills=[_intent_routing_skill, _visual_analysis_skill])
 
 # ---------------------------------------------------------------------------
 # Agent

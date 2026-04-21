@@ -175,19 +175,21 @@ def _error(kind: str, message: str, suggestion: str = "") -> str:
     return json.dumps(payload, indent=2)
 
 
-def _serialise_result(result: RankedResult) -> dict:
+def _serialise_result(result: RankedResult, include_image: bool = True) -> dict:
     """
     Convert a RankedResult (+ CitationEnvelope dataclass) to a JSON-safe dict.
 
     Scores are rounded to 6 decimal places to keep payload size manageable
     while preserving enough precision for ranking comparisons.
     """
-    return {
+    item = {
         "content":           result.content,
         "final_score":       round(result.final_score, 6),
         "ce_score":          round(result.ce_score, 6),
         "rrf_score":         round(result.rrf_score, 6),
         "retrieval_sources": result.retrieval_sources,
+        "summary":           result.summary,
+        "chunk_type":        result.chunk_type,
         "citation": {
             "filename":     result.citation.filename,
             "page_index":   result.citation.page_index,
@@ -202,6 +204,9 @@ def _serialise_result(result: RankedResult) -> dict:
             "corpus_id":    result.citation.corpus_id,
         },
     }
+    if include_image and result.chunk_image_base64:
+        item["chunk_image_base64"] = result.chunk_image_base64
+    return item
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +284,14 @@ class RerankSearchInput(BaseModel):
             "If true, include a pre-formatted citation string for each result "
             "(suitable for direct insertion into LLM context). "
             "Example: '[1] report.pdf · p.0 · chunk 2 · score 0.923'."
+        ),
+    )
+    include_images: bool = Field(
+        default=True,
+        description=(
+            "Include chunk_image_base64 in results for visual chunks "
+            "(table/chart/figure/image). Set False for text-only queries "
+            "to reduce payload size."
         ),
     )
 
@@ -456,7 +469,7 @@ async def rerank_search(params: RerankSearchInput, ctx: Context) -> str:
 
     serialised: List[dict] = []
     for i, r in enumerate(results):
-        item = _serialise_result(r)
+        item = _serialise_result(r, include_image=params.include_images)
         if params.include_citations_text:
             item["citation_text"] = format_citation(r, index=i + 1)
         serialised.append(item)

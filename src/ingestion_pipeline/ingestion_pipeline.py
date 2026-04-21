@@ -16,7 +16,7 @@ import redis.asyncio as redis_async
 import numpy as np
 import litellm
 from qdrant_client import AsyncQdrantClient, models
-from shared.schemas import Document, Chunk, Metadata, Grounding
+from shared.schemas import Document, Chunk, Metadata, Grounding, VISUAL_CHUNK_TYPES, crop_chunk_image
 from shared.utils import HeaderStack
 
 # ---------------------------------------------------------------------------
@@ -201,6 +201,7 @@ class AsyncMerkleQdrantIngestor:
         "is_merkle_leaf",
         "is_active",
         "is_merkle_root",
+        "has_visual",
     ]
 
     def __init__(
@@ -751,6 +752,13 @@ class AsyncMerkleQdrantIngestor:
         # 3. Build Qdrant point structs
         now_iso = _utcnow_iso()
         points: List[models.PointStruct] = []
+        
+        page_b64 = doc.metadata.page_image_base64
+        chunk_crops: List[Optional[str]] = [
+            crop_chunk_image(page_b64, c.grounding.bbox)
+            if c.grounding and c.grounding.chunk_type in VISUAL_CHUNK_TYPES else None
+            for c in enriched_chunks
+        ]
 
         for idx, (chunk, vector) in enumerate(zip(enriched_chunks, embeddings)):
             chunk_hash = chunk.get_content_hash(doc_cid)
@@ -776,6 +784,8 @@ class AsyncMerkleQdrantIngestor:
                         "timestamp": now_iso,
                         "is_merkle_leaf": True,
                         "is_active": True,
+                        "has_visual": chunk_crops[idx] is not None,
+                        "chunk_image_base64": chunk_crops[idx],
                     },
                 )
             )

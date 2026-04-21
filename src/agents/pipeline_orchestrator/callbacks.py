@@ -4,6 +4,7 @@ callbacks.py — Pipeline Orchestrator Agent Callbacks
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -163,6 +164,34 @@ def before_model_callback(
             elif any(tok in user_text for tok in _CANCEL_TOKENS):
                 del state["orchestrator:pending_purge"]
                 logger.info("[ORCH] Purge cancelled for '%s'", pending_purge)
+
+    # 4. Multimodal RAG: Inject retrieved images and context
+    rerank_results_raw = state.get("reranker:last_results")
+    if rerank_results_raw and llm_request.contents:
+        try:
+            results = json.loads(rerank_results_raw)
+            if isinstance(results, list):
+                last_msg = llm_request.contents[-1]
+                if last_msg.role == "user":
+                    for i, res in enumerate(results, 1):
+                        img_b64 = res.get("chunk_image_base64")
+                        if img_b64:
+                            try:
+                                # Attach the image as a Part
+                                last_msg.parts.append(types.Part(
+                                    inline_data=types.Blob(
+                                        mime_type="image/png", # Ingestor uses PNG for crops
+                                        data=base64.b64decode(img_b64)
+                                    )
+                                ))
+                                last_msg.parts.append(types.Part(
+                                    text=f"\n[Visual Context: Above image corresponds to Result {i}]"
+                                ))
+                                logger.info("[ORCH] Attached visual context for Result %d", i)
+                            except Exception as decode_err:
+                                logger.warning("[ORCH] Image decode failed: %s", decode_err)
+        except Exception as exc:
+            logger.warning("[ORCH] Failed to attach visual context: %s", exc)
 
     ctx_parts = []
     if state.get("orchestrator:active_file"):
