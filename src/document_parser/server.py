@@ -422,6 +422,7 @@ _OVERRIDE_FIELDS = {
     "top_p",
     "max_new_tokens",
     "repetition_penalty",
+    "vlm_timeout",
     "prompt_label",
     "min_pixels",
     "max_pixels",
@@ -553,6 +554,7 @@ async def parse_document(
     top_p: Optional[float] = None,
     max_new_tokens: Optional[int] = None,
     repetition_penalty: Optional[float] = None,
+    vlm_timeout: Optional[float] = None,
     prompt_label: Optional[str] = None,
     # --- pixel limits ---
     min_pixels: Optional[int] = None,
@@ -608,6 +610,7 @@ async def parse_document(
             "top_p": top_p,
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
+            "vlm_timeout": vlm_timeout,
             "prompt_label": prompt_label,
             "min_pixels": min_pixels,
             "max_pixels": max_pixels,

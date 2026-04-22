@@ -432,6 +432,13 @@ class PipelineSettings(_Base):
             "1.0 = no penalty. Raise to 1.05–1.1 if the VLM repeats table rows."
         ),
     )
+    vlm_timeout: Optional[float] = Field(
+        default=120.0,
+        description=(
+            "Timeout in seconds for VLM inference calls. "
+            "Increase this if you encounter connection errors during worker cold-starts (~30s)."
+        ),
+    )
 
     # ── FIX 1: prompt_label — excluded from to_predict_kwargs() by default ───
     # See class docstring. This field exists for explicit debug override only.
@@ -524,11 +531,10 @@ class PipelineSettings(_Base):
         """
         predict_keys = {
             "temperature", "top_p", "max_new_tokens", "repetition_penalty",
+            "vlm_timeout",
             "layout_threshold", "layout_nms",
             "layout_unclip_ratio", "layout_merge_bboxes_mode",
             "layout_shape_mode", "min_pixels", "max_pixels",
-            # prompt_label intentionally excluded here — see FIX 1 in class docstring.
-            # It is added below only when the caller explicitly set it.
         }
 
         full_dump = self.model_dump()

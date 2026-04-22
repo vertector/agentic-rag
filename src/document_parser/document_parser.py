@@ -524,7 +524,11 @@ class DocumentParser:
                 shutil.copy(document_path, tmp_path)
 
         try:
-            preds = list(pipeline.predict(input=str(tmp_path)))
+            # Pass per-call inference parameters (FIX-10)
+            preds = list(pipeline.predict(
+                input=str(tmp_path), 
+                **self._settings.to_predict_kwargs()
+            ))
             # We must use the library's official serialization (save_to_json) 
             # as PredictResult contains non-serializable PaddleOCRVLBlock objects.
             with tempfile.TemporaryDirectory() as td:
