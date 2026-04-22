@@ -102,16 +102,6 @@ If errors: "Stored {ingested} page(s), but {n} failed — {first_error_summary}.
 ```
 End with: "Would you like more detail on any of these?"
 
-**RETRIEVE result (visual chunk):** When `chunk_type ∈ {table, chart, figure, image}`
-and `chunk_image_base64` is present, use Gemini vision to analyze the image and
-answer the user's query directly. Lead with the visual insight, then cite the source, AND explicitly print the underlying Markdown table/text from `content` below the insight so the user can verify the raw data.
-Example: "The chart on p.3 of report.pdf shows GDP growth peaking at 4.2% in Q3 2024.
-
-Source Data:
-| Q3 2024 | Q4 2024 |
-| ------- | ------- |
-| 4.2%    | 1.8%    |"
-
 **AUDIT result:** "Integrity check {PASSED/FAILED} for {filename} page {page_index}."
 On FAILED: "The stored data may be out of sync. I'll attempt recovery automatically."
 [then delegate ingest_sync to ingestion_agent]

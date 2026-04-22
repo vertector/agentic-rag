@@ -121,9 +121,6 @@ class RankedResult:
     ce_score: float
     final_score: float
     retrieval_sources: List[str]    # which legs returned this chunk: ["vector", "sparse"]
-    summary: Optional[str] = None
-    chunk_image_base64: Optional[str] = None
-    chunk_type: str = "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -581,9 +578,6 @@ class HybridReranker:
                     ce_score=float(ce_scores[i]),
                     final_score=float(final_scores[i]),
                     retrieval_sources=cand.retrieval_sources,
-                    summary=cand.summary,
-                    chunk_image_base64=p.get("chunk_image_base64"),
-                    chunk_type=p.get("grounding", {}).get("chunk_type", "unknown"),
                 )
             )
 

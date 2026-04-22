@@ -15,7 +15,6 @@ Prompt split for context caching:
 
 from __future__ import annotations
 
-import json
 import logging
 import pathlib
 from typing import TYPE_CHECKING
@@ -122,31 +121,6 @@ def build_instruction(context: "InvocationContext") -> str:
             "⛔  ESCALATION: A sub-agent could not complete the last operation. "
             "Tell the user something went wrong and suggest retrying or contacting support."
         )
-
-    # ── Retrieved Context (for Answer Generation)
-    # If the reranker has returned results, inject them so the orchestrator can synthesize an answer.
-    rerank_output_raw = state.get("reranker:last_results")
-    if rerank_output_raw:
-        try:
-            results = json.loads(rerank_output_raw)
-            if results and isinstance(results, list):
-                context_block = ["RETRIEVED CONTEXT (use this to answer the user's question):"]
-                for i, res in enumerate(results, 1):
-                    citation = res.get("citation", {})
-                    content = res.get("content", "")
-                    score = res.get("final_score", 0.0)
-                    summary = res.get("summary")
-                    
-                    header = f"Result {i} (File: {citation.get('filename')}, Page: {citation.get('page_index')}, Score: {score:.4f})"
-                    context_block.append(f"--- {header} ---")
-                    if summary:
-                        context_block.append(f"[Semantic Summary]: {summary}")
-                    context_block.append(content)
-                    context_block.append("")
-                
-                augments.append("\n".join(context_block))
-        except json.JSONDecodeError:
-            pass
 
     if not augments:
         return ""

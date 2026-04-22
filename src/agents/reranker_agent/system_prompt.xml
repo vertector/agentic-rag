@@ -303,15 +303,11 @@
     This marker signals to the orchestrator that the retrieval chain is
     complete and it can now synthesize the final answer for the user.
 
-    Every result carries full provenance and content enhancements:
-      - `content`: the raw markdown or extracted text
-      - `summary`: semantic "Semantic Index" summary (if available)
-      - `chunk_image_base64`: cropped visual context (if available)
-      - `citation` block:
-          - `filename`, `page_index` (1-indexed), `page_count`
-          - `chunk_hash`, `version_root`, `blob_cid` (Merkle/CAS integrity)
-          - `bbox` (PDF coordinate anchor [x0, y0, x1, y1])
-          - `corpus_id` (Logical Knowledge Base isolation)
+    Every result carries full provenance in its `citation` block:
+      - `filename`, `page_index` (1-indexed), `page_count`
+      - `chunk_hash`, `version_root`, `blob_cid` (Merkle/CAS integrity)
+      - `bbox` (PDF coordinate anchor [x0, y0, x1, y1])
+      - `corpus_id` (Logical Knowledge Base isolation)
 
     For error responses: JSON with keys `error`, `message`, `suggestion`.
     For status responses: JSON from `rerank_status` with reachability booleans.
